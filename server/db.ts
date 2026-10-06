@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import {
   User,
+  UserRecord,
   Team,
   TeamMember,
   TeamInvitation,
@@ -24,7 +25,7 @@ import { generateSingleEliminationBracket } from './bracket';
 import { calculateRunScore } from './scoring';
 
 export interface DatabaseSchema {
-  users: User[];
+  users: UserRecord[];
   teams: Team[];
   teamMembers: TeamMember[];
   teamInvitations: TeamInvitation[];
@@ -64,8 +65,8 @@ class DatabaseStore {
       }
     }
 
-    // In production without explicit demo mode, initialize empty database (never seed demo accounts)
-    if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE !== 'true') {
+    // In non-demo environments, initialize clean empty database (never seed demo accounts)
+    if (process.env.DEMO_MODE !== 'true') {
       const emptyDb = this.createEmptyDatabase();
       this.saveImmediate(emptyDb);
       return emptyDb;
@@ -100,7 +101,7 @@ class DatabaseStore {
     // Secure production administrator bootstrap mechanism
     if (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD) {
       const nowIso = new Date().toISOString();
-      const adminUser: User = {
+      const adminUser: UserRecord = {
         id: `usr-admin-${uuidv4().slice(0, 8)}`,
         email: process.env.BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase(),
         passwordHash: bcrypt.hashSync(process.env.BOOTSTRAP_ADMIN_PASSWORD, 10),
@@ -143,7 +144,7 @@ class DatabaseStore {
     const passwordHash = bcrypt.hashSync('MarathonPass2026!', 8);
 
     // 1. Users
-    const users: User[] = [
+    const users: UserRecord[] = [
       {
         id: 'usr-admin-1',
         email: 'director@marathontournaments.gg',

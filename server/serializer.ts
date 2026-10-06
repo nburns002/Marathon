@@ -1,4 +1,4 @@
-import { Match, MatchMessage, RunSubmission, SanitizedRunSubmission, User } from '../src/types';
+import { Match, MatchMessage, MatchEvidence, AdminTicket, RunSubmission, SanitizedRunSubmission, User } from '../src/types';
 import { db } from './db';
 
 export interface ViewerContext {
@@ -53,6 +53,7 @@ export function buildViewerContext(user?: User | null, match?: Match | null): Vi
   return {
     userId: user.id,
     role,
+    teamId: isRosterA ? match.teamAId || undefined : isRosterB ? match.teamBId || undefined : undefined,
     isRosterA,
     isRosterB
   };
@@ -162,5 +163,73 @@ export function serializeMessagesForViewer(
       message: `SYSTEM — ${submittingTeamName} submitted and locked Run 1.`,
       structuredScore: undefined
     };
+  });
+}
+
+/**
+ * Authoritatively filters match evidence to prevent unrevealed Run 1 VOD leaks
+ * to opponents and spectators before Run 1 is officially revealed.
+ */
+export function serializeEvidenceForViewer(
+  evidenceList: MatchEvidence[],
+  viewerContext: ViewerContext,
+  match: Match
+): MatchEvidence[] {
+  const isAdmin = viewerContext.role === 'ADMIN' || viewerContext.role === 'SUPERADMIN';
+  if (match.run1Revealed || isAdmin) {
+    return evidenceList;
+  }
+
+  return evidenceList.filter((ev) => {
+    // If evidence is explicitly for Run 1, enforce strict secrecy
+    const isRun1 = ev.runNumber === 1;
+    if (!isRun1) {
+      return true;
+    }
+
+    // Team A roster may see Team A Run 1 evidence
+    if (viewerContext.isRosterA && ev.teamId === match.teamAId) {
+      return true;
+    }
+
+    // Team B roster may see Team B Run 1 evidence
+    if (viewerContext.isRosterB && ev.teamId === match.teamBId) {
+      return true;
+    }
+
+    // Opposing team and spectators cannot receive unrevealed Run 1 evidence
+    return false;
+  });
+}
+
+/**
+ * Authoritatively filters admin tickets based on viewer role.
+ * Anonymous spectators receive no tickets.
+ * Participants receive only tickets created by themselves or their team.
+ * Admins receive full ticket data.
+ */
+export function serializeAdminTicketsForViewer(
+  tickets: AdminTicket[],
+  viewerContext: ViewerContext
+): AdminTicket[] {
+  const isAdmin = viewerContext.role === 'ADMIN' || viewerContext.role === 'SUPERADMIN';
+  if (isAdmin) {
+    return tickets;
+  }
+
+  // Anonymous spectators receive no admin tickets
+  if (!viewerContext.userId) {
+    return [];
+  }
+
+  // Requesting participant: see only their own tickets or their team's tickets
+  return tickets.filter((t) => {
+    if (t.requestingUserId === viewerContext.userId) {
+      return true;
+    }
+    if (t.requestingTeamId && viewerContext.teamId && t.requestingTeamId === viewerContext.teamId) {
+      return true;
+    }
+    return false;
   });
 }

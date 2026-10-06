@@ -16,7 +16,7 @@ import adminRoutes from '../server/routes/admin';
 import tournamentRoutes from '../server/routes/tournaments';
 import teamRoutes from '../server/routes/teams';
 import authRoutes from '../server/routes/auth';
-import { Match, Tournament, Team, User, TournamentRegistration, MatchMessage } from '../src/types';
+import { Match, Tournament, Team, User, UserRecord, TournamentRegistration, MatchMessage } from '../src/types';
 
 const DB_FILE = path.join(process.cwd(), 'marathon_db.json');
 let initialDbBackup: string = '';
@@ -24,14 +24,14 @@ let app: Express;
 let server: any;
 let baseUrl = '';
 
-let adminUser: User;
-let captainA: User;
-let memberA2: User;
-let memberA3: User;
-let captainB: User;
-let memberB2: User;
-let memberB3: User;
-let spectatorUser: User;
+let adminUser: UserRecord;
+let captainA: UserRecord;
+let memberA2: UserRecord;
+let memberA3: UserRecord;
+let captainB: UserRecord;
+let memberB2: UserRecord;
+let memberB3: UserRecord;
+let spectatorUser: UserRecord;
 
 let teamA: Team;
 let teamB: Team;
@@ -275,9 +275,10 @@ describe('Full Stabilization Suite: Scoring, Secrecy, Registration & Platform Sa
     const match: Match = {
       id: 'm-score-test',
       tournamentId: tournament.id,
-      tournamentName: tournament.title,
       round: 1,
       matchNumber: 1,
+      bracketPosition: 1,
+      isBye: false,
       teamAId: teamA.id,
       teamAName: teamA.name,
       teamBId: teamB.id,
@@ -342,9 +343,10 @@ describe('Full Stabilization Suite: Scoring, Secrecy, Registration & Platform Sa
     const match: Match = {
       id: 'm-sequence-test',
       tournamentId: tournament.id,
-      tournamentName: tournament.title,
       round: 1,
       matchNumber: 1,
+      bracketPosition: 1,
+      isBye: false,
       teamAId: teamA.id,
       teamAName: teamA.name,
       teamBId: teamB.id,
@@ -416,9 +418,10 @@ describe('Full Stabilization Suite: Scoring, Secrecy, Registration & Platform Sa
     const match: Match = {
       id: 'm-secrecy-test',
       tournamentId: tournament.id,
-      tournamentName: tournament.title,
       round: 1,
       matchNumber: 1,
+      bracketPosition: 1,
+      isBye: false,
       teamAId: teamA.id,
       teamAName: teamA.name,
       teamBId: teamB.id,
@@ -671,9 +674,10 @@ describe('Full Stabilization Suite: Scoring, Secrecy, Registration & Platform Sa
     const match: Match = {
       id: 'm-ev-test',
       tournamentId: tournament.id,
-      tournamentName: tournament.title,
       round: 1,
       matchNumber: 1,
+      bracketPosition: 1,
+      isBye: false,
       teamAId: teamA.id,
       teamAName: teamA.name,
       teamBId: teamB.id,

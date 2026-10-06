@@ -230,13 +230,19 @@ export function generateSingleEliminationBracket(
     }
   }
 
+  const seedsMap: Record<string, number> = {};
+  seedAudit.forEach((s) => {
+    seedsMap[s.teamId] = s.seed;
+  });
+
   const bracket: Bracket = {
     id: bracketId,
     tournamentId,
     totalRounds,
     bracketSize,
     generatedAt: now,
-    matches: allMatches
+    matches: allMatches,
+    seeds: seedsMap
   };
 
   return {

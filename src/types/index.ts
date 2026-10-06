@@ -43,7 +43,7 @@ export interface Team {
   logoUrl: string;
   captainUserId: string;
   createdAt: string;
-  captain?: User;
+  captain?: PublicUser;
   members?: TeamMember[];
   stats?: {
     tournamentsPlayed: number;
@@ -135,6 +135,12 @@ export interface TournamentRegistration {
   registeredAt: string;
   termsAcceptedAt: string;
   refundPolicyAcceptedAt: string;
+}
+
+export interface TournamentRegistrationDTO extends TournamentRegistration {
+  teamLogo?: string;
+  captainName?: string;
+  seed?: number | null;
 }
 
 export type MatchStatus =
@@ -320,7 +326,7 @@ export interface MatchRoomResponse {
 export interface TournamentDetailResponse {
   tournament: Tournament;
   bracket: Bracket | null;
-  registrations: TournamentRegistration[];
+  registrations: TournamentRegistrationDTO[];
   registrationsCount: number;
 }
 
@@ -336,6 +342,7 @@ export interface Bracket {
   bracketSize: number;
   generatedAt: string;
   matches: Match[];
+  seeds?: Record<string, number>;
 }
 
 export interface AdminAction {

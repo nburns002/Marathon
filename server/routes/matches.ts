@@ -6,7 +6,13 @@ import { parseScoreCommandStrict } from '../scoring';
 import { calculateTournamentCurrentRound } from '../bracket';
 import { MatchEvidence, MatchDispute, AdminTicket } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
-import { buildViewerContext, serializeMatchForViewer, serializeMessagesForViewer } from '../serializer';
+import {
+  buildViewerContext,
+  serializeMatchForViewer,
+  serializeMessagesForViewer,
+  serializeEvidenceForViewer,
+  serializeAdminTicketsForViewer
+} from '../serializer';
 import { submitScoreAuthoritative } from '../scoreSubmissionService';
 import { formatTournamentDTO } from './tournaments';
 
@@ -64,13 +70,15 @@ router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
     : null;
 
   const rawMessages = db.data.matchMessages.filter((msg) => msg.matchId === match.id);
-  const evidence = db.data.matchEvidence.filter((ev) => ev.matchId === match.id);
-  const disputes = db.data.matchDisputes.filter((d) => d.matchId === match.id);
-  const adminTickets = db.data.adminTickets.filter((tkt) => tkt.matchId === match.id);
+  const rawEvidence = db.data.matchEvidence.filter((ev) => ev.matchId === match.id);
+  const rawDisputes = db.data.matchDisputes.filter((d) => d.matchId === match.id);
+  const rawAdminTickets = db.data.adminTickets.filter((tkt) => tkt.matchId === match.id);
 
   const viewerContext = buildViewerContext(req.user, match);
   const sanitizedMatch = serializeMatchForViewer(match, viewerContext);
   const sanitizedMessages = serializeMessagesForViewer(rawMessages, viewerContext, match);
+  const sanitizedEvidence = serializeEvidenceForViewer(rawEvidence, viewerContext, match);
+  const sanitizedTickets = serializeAdminTicketsForViewer(rawAdminTickets, viewerContext);
 
   const teamACaptainId = regA?.captainUserId || teamA?.captainUserId || null;
   const teamBCaptainId = regB?.captainUserId || teamB?.captainUserId || null;
@@ -105,9 +113,9 @@ router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
     teamACaptainId,
     teamBCaptainId,
     messages: sanitizedMessages,
-    evidence,
-    disputes,
-    adminTickets
+    evidence: sanitizedEvidence,
+    disputes: rawDisputes,
+    adminTickets: sanitizedTickets
   });
 });
 
@@ -450,7 +458,7 @@ function handleDispute(req: AuthenticatedRequest, res: Response) {
     requestingTeamId,
     requestingTeamName,
     category: `DISPUTE: ${category || 'Score Discrepancy'}`,
-    description: description.trim(),
+    description: desc,
     status: 'OPEN',
     createdAt: isoNow,
     updatedAt: isoNow
@@ -511,9 +519,6 @@ router.post('/:id/request-admin', requireAuth, (req: AuthenticatedRequest, res: 
     return res.status(400).json({ error: 'Please describe the issue requiring administrator assistance.' });
   }
 
-  const teamA = match.teamAId ? db.data.teams.find((t) => t.id === match.teamAId) : null;
-  const teamB = match.teamBId ? db.data.teams.find((t) => t.id === match.teamBId) : null;
-
   const regA = match.teamAId
     ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamAId)
     : null;
@@ -521,11 +526,26 @@ router.post('/:id/request-admin', requireAuth, (req: AuthenticatedRequest, res: 
     ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
     : null;
 
-  const isCaptainA = (teamA && teamA.captainUserId === user.id) || (regA && regA.captainUserId === user.id);
-  const isCaptainB = (teamB && teamB.captainUserId === user.id) || (regB && regB.captainUserId === user.id);
+  const isRosterA =
+    (regA?.rosterSnapshot && regA.rosterSnapshot.some((m) => m.userId === user.id)) ||
+    regA?.captainUserId === user.id ||
+    (match.teamAId ? db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id) : false);
 
-  const requestingTeamId = isCaptainA ? match.teamAId! : isCaptainB ? match.teamBId! : undefined;
-  const requestingTeamName = isCaptainA ? match.teamAName! : isCaptainB ? match.teamBName! : undefined;
+  const isRosterB =
+    (regB?.rosterSnapshot && regB.rosterSnapshot.some((m) => m.userId === user.id)) ||
+    regB?.captainUserId === user.id ||
+    (match.teamBId ? db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id) : false);
+
+  const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
+
+  if (!isRosterA && !isRosterB && !isAdmin) {
+    return res.status(403).json({
+      error: 'Only participating players or tournament administrators can request referee assistance for this match.'
+    });
+  }
+
+  const requestingTeamId = isRosterA ? match.teamAId! : isRosterB ? match.teamBId! : undefined;
+  const requestingTeamName = isRosterA ? match.teamAName! : isRosterB ? match.teamBName! : undefined;
 
   const isoNow = new Date().toISOString();
 

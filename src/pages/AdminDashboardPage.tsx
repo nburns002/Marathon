@@ -39,7 +39,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
 
   // Dispute Resolution Form State
   const [resolvingDisputeId, setResolvingDisputeId] = useState<string | null>(null);
-  const [resolutionRuling, setResolutionRuling] = useState<'SCORE_UPHELD' | 'SCORE_OVERRIDDEN' | 'MATCH_REPLAY' | 'FORFEIT_PENALTY'>('SCORE_OVERRIDDEN');
+  const [resolutionRuling, setResolutionRuling] = useState<'SCORE_UPHELD' | 'SCORE_OVERRIDDEN'>('SCORE_OVERRIDDEN');
   const [resolutionText, setResolutionText] = useState('');
   const [resolutionReason, setResolutionReason] = useState('');
   const [resolving, setResolving] = useState(false);
@@ -283,33 +283,41 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => onSelectMatch(d.matchId)}
-                        className="px-3 py-1.5 rounded-lg bg-[#141d2e] hover:bg-[#1a263d] text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1"
-                      >
-                        <span>Open Match Room</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
+                      {d.matchId && (
+                        <button
+                          onClick={() => onSelectMatch(d.matchId)}
+                          className="px-3 py-1.5 rounded-lg bg-[#141d2e] hover:bg-[#1a263d] text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1"
+                        >
+                          <span>Open Match Room</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
                     <div className="p-3 rounded-xl bg-[#131b2c] border border-[#1e2a42]">
                       <div className="text-[10px] text-slate-400 uppercase">Dispute Filed By</div>
-                      <div className="text-white font-bold mt-0.5">{d.initiatorTeamName} (Captain {d.initiatorCaptainName})</div>
-                      <div className="text-slate-400 mt-2 text-[11px]">
-                        <strong>Reason:</strong> "{d.reason}"
+                      <div className="text-white font-bold mt-0.5">
+                        {d.requestingTeamName || d.initiatorTeamName || 'Disputing Team'}
+                        {d.disputedTeamName ? ` vs ${d.disputedTeamName}` : ''}
                       </div>
-                      {d.evidenceUrl && (
-                        <div className="mt-2">
-                          <a
-                            href={d.evidenceUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-amber-400 hover:underline flex items-center gap-1 text-[11px]"
-                          >
-                            <ExternalLink className="w-3 h-3" /> View Submitted Evidence VOD
-                          </a>
+                      <div className="text-slate-400 mt-2 text-[11px]">
+                        <strong>Explanation:</strong> "{d.description || d.reason || 'No explanation provided'}"
+                      </div>
+                      {((d.evidenceUrls && d.evidenceUrls.length > 0) || d.evidenceUrl) && (
+                        <div className="mt-2 space-y-1">
+                          {(d.evidenceUrls || [d.evidenceUrl]).filter(Boolean).map((url: string, idx: number) => (
+                            <a
+                              key={idx}
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-amber-400 hover:underline flex items-center gap-1 text-[11px]"
+                            >
+                              <ExternalLink className="w-3 h-3" /> View Submitted Evidence #{idx + 1}
+                            </a>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -372,22 +380,26 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                       {t.category}
                     </span>
                     <span className="text-xs font-mono font-bold text-white">
-                      From {t.creatorName} ({t.creatorRole})
+                      From {t.requestingUserName || (t as any).creatorName || 'User'}
+                      {t.requestingTeamName ? ` (${t.requestingTeamName})` : ''}
                     </span>
                   </div>
                   <p className="text-xs text-slate-300">{t.description}</p>
                   <div className="text-[10px] font-mono text-slate-500">
-                    Created {new Date(t.createdAt).toLocaleTimeString()} • Match ID: {t.matchId}
+                    Created {new Date(t.createdAt).toLocaleTimeString()}
+                    {t.matchId ? ` • Match ID: ${t.matchId}` : ''}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => onSelectMatch(t.matchId)}
-                    className="px-3 py-1.5 rounded-lg bg-[#141d2e] hover:bg-[#1a263d] text-amber-300 border border-amber-500/30 text-xs font-semibold"
-                  >
-                    Open Match Room
-                  </button>
+                  {t.matchId && (
+                    <button
+                      onClick={() => onSelectMatch(t.matchId!)}
+                      className="px-3 py-1.5 rounded-lg bg-[#141d2e] hover:bg-[#1a263d] text-amber-300 border border-amber-500/30 text-xs font-semibold"
+                    >
+                      Open Match Room
+                    </button>
+                  )}
 
                   {t.status === 'OPEN' && (
                     <button
@@ -509,8 +521,6 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                 >
                   <option value="SCORE_OVERRIDDEN">Score Overridden & Corrected</option>
                   <option value="SCORE_UPHELD">Score Upheld (Dispute Rejected)</option>
-                  <option value="FORFEIT_PENALTY">Forfeit Penalty Imposed</option>
-                  <option value="MATCH_REPLAY">Match Replay Granted</option>
                 </select>
               </div>
 

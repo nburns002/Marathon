@@ -18,7 +18,7 @@ import { generateToken } from '../server/middleware';
 import matchRoutes from '../server/routes/matches';
 import adminRoutes from '../server/routes/admin';
 import tournamentRoutes from '../server/routes/tournaments';
-import { Match, Tournament, Team, User, TournamentRegistration } from '../src/types';
+import { Match, Tournament, Team, User, UserRecord, TournamentRegistration } from '../src/types';
 
 const DB_FILE = path.join(process.cwd(), 'marathon_db.json');
 let initialDbBackup: string = '';
@@ -27,10 +27,10 @@ let server: any;
 let baseUrl = '';
 
 // Test fixtures
-let adminUser: User;
-let captainA: User;
-let captainB: User;
-let otherUser: User;
+let adminUser: UserRecord;
+let captainA: UserRecord;
+let captainB: UserRecord;
+let otherUser: UserRecord;
 let teamA: Team;
 let teamB: Team;
 let teamC: Team;

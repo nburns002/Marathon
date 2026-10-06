@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, requireAdmin, optionalAuth } from '../middleware';
 import { generateSingleEliminationBracket, calculateTournamentCurrentRound, isDownstreamMatchMateriallyStarted } from '../bracket';
-import { TournamentRegistration, TournamentDetailResponse } from '../../src/types';
+import { TournamentRegistration, TournamentRegistrationDTO, TournamentDetailResponse } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 import { validateTournamentRegistrationEligibility } from '../registrationService';
 import { buildViewerContext, serializeMatchForViewer } from '../serializer';
@@ -57,10 +57,22 @@ router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
     return serializeMatchForViewer(m, viewerContext);
   });
 
+  const enrichedRegistrations: TournamentRegistrationDTO[] = confirmedRegistrations.map((reg) => {
+    const team = db.data.teams.find((t) => t.id === reg.teamId);
+    const captainUser = db.data.users.find((u) => u.id === reg.captainUserId);
+    const seed = bracket?.seeds ? (bracket.seeds[reg.teamId] ?? null) : null;
+    return {
+      ...reg,
+      teamLogo: team?.logoUrl || '',
+      captainName: captainUser?.displayName || captainUser?.username || 'Captain',
+      seed
+    };
+  });
+
   const response: TournamentDetailResponse = {
     tournament: formatTournamentDTO(tournament, confirmedRegistrations.length),
     bracket: bracket ? { ...bracket, matches: sanitizedMatches } : null,
-    registrations: confirmedRegistrations,
+    registrations: enrichedRegistrations,
     registrationsCount: confirmedRegistrations.length
   };
 
@@ -133,7 +145,7 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
     return res.status(400).json({ error: 'Please select a team to register.' });
   }
 
-  if (!termsAccepted || !refundPolicyAccepted) {
+  if (termsAccepted !== true || refundPolicyAccepted !== true) {
     return res.status(400).json({
       error: 'You must affirm acceptance of the Tournament Rules, Terms of Service, and Refund Policy.'
     });
@@ -156,7 +168,7 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
     tournamentId: tournament.id,
     teamId: team.id,
     teamName: team.name,
-    captainUserId: user.id,
+    captainUserId: team.captainUserId,
     status: 'REGISTERED',
     // In demo mode this is a simulated checkout transaction. If real payments are enabled,
     // PAID is only set upon webhook confirmation from the payment provider.

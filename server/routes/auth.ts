@@ -3,12 +3,12 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, generateToken, requireAuth } from '../middleware';
-import { User, PublicUser, TeamSummary } from '../../src/types';
+import { User, UserRecord, PublicUser, TeamSummary } from '../../src/types';
 import { validateBungieIdFormat } from '../registrationService';
 
 const router = Router();
 
-function toPublicUser(u?: User | null): PublicUser | undefined {
+function toPublicUser(u?: User | UserRecord | null): PublicUser | undefined {
   if (!u) return undefined;
   return {
     id: u.id,
@@ -48,7 +48,7 @@ router.post('/register', (req, res) => {
   const isoNow = new Date().toISOString();
   const passwordHash = bcrypt.hashSync(password, 8);
 
-  const newUser: User = {
+  const newUser: UserRecord = {
     id: `usr-${uuidv4().slice(0, 8)}`,
     email: email.trim().toLowerCase(),
     passwordHash,
@@ -89,20 +89,20 @@ router.post('/login', (req, res) => {
     return res.status(400).json({ error: 'Email or username and password are required.' });
   }
 
-  const user = db.data.users.find(
+  const userRecord = db.data.users.find(
     (u) => u.email.toLowerCase() === login.toLowerCase().trim() || u.username.toLowerCase() === login.toLowerCase().trim()
   );
 
-  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+  if (!userRecord || !bcrypt.compareSync(password, userRecord.passwordHash)) {
     return res.status(401).json({ error: 'Invalid credentials.' });
   }
 
-  if (user.accountStatus === 'SUSPENDED') {
+  if (userRecord.accountStatus === 'SUSPENDED') {
     return res.status(403).json({ error: 'Account is suspended.' });
   }
 
-  const token = generateToken(user);
-  const { passwordHash: _, ...safeUser } = user;
+  const token = generateToken(userRecord);
+  const { passwordHash: _, ...safeUser } = userRecord;
   return res.json({ token, user: safeUser });
 });
 
@@ -136,10 +136,8 @@ router.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const invitations = db.data.teamInvitations.filter((inv) => inv.invitedUserId === user.id && inv.status === 'PENDING');
   const userNotifications = db.data.notifications.filter((n) => n.userId === user.id).slice(-20);
 
-  const { passwordHash: _, ...safeUser } = user;
-
   return res.json({
-    user: safeUser,
+    user,
     teams: enrichedTeams,
     primaryTeam: enrichedTeams[0] || null,
     invitations,
@@ -152,8 +150,16 @@ router.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) =
   const user = req.user!;
   const { displayName, bungieId, avatarUrl } = req.body;
 
-  if (displayName) user.displayName = displayName.trim();
-  if (avatarUrl) user.avatarUrl = avatarUrl.trim();
+  const userRecord = db.data.users.find((u) => u.id === user.id);
+
+  if (displayName) {
+    user.displayName = displayName.trim();
+    if (userRecord) userRecord.displayName = displayName.trim();
+  }
+  if (avatarUrl) {
+    user.avatarUrl = avatarUrl.trim();
+    if (userRecord) userRecord.avatarUrl = avatarUrl.trim();
+  }
 
   if (bungieId && bungieId.trim() !== user.bungieId) {
     const cleanBungie = bungieId.trim();
@@ -163,6 +169,7 @@ router.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) =
       });
     }
     user.bungieId = cleanBungie;
+    if (userRecord) userRecord.bungieId = cleanBungie;
 
     db.data.auditLogs.push({
       id: uuidv4(),
@@ -177,30 +184,31 @@ router.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) =
     });
   }
 
-  user.updatedAt = new Date().toISOString();
+  const isoNow = new Date().toISOString();
+  user.updatedAt = isoNow;
+  if (userRecord) userRecord.updatedAt = isoNow;
   db.save();
 
-  const { passwordHash: _, ...safeUser } = user;
   return res.json({
-    user: safeUser,
+    user,
     message: 'Profile updated. Note: Any active locked tournament rosters retain their snapshot Bungie ID.'
   });
 });
 
-// Demo persona switcher (Disabled in production mode)
+// Demo persona switcher (Disabled in non-demo mode)
 router.post('/switch-demo-user', (req, res) => {
-  if (process.env.NODE_ENV === 'production' || process.env.DEMO_MODE === 'false') {
-    return res.status(403).json({ error: 'Demo user impersonation is disabled in production mode.' });
+  if (process.env.DEMO_MODE !== 'true') {
+    return res.status(403).json({ error: 'Demo user impersonation is disabled in non-demo mode.' });
   }
 
   const { userId } = req.body;
-  const user = db.data.users.find((u) => u.id === userId);
-  if (!user) {
+  const userRecord = db.data.users.find((u) => u.id === userId);
+  if (!userRecord) {
     return res.status(404).json({ error: 'Demo user not found.' });
   }
 
-  const token = generateToken(user);
-  const { passwordHash: _, ...safeUser } = user;
+  const token = generateToken(userRecord);
+  const { passwordHash: _, ...safeUser } = userRecord;
   return res.json({ token, user: safeUser });
 });
 

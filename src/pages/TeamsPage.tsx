@@ -174,8 +174,9 @@ export const TeamsPage: React.FC = () => {
       {/* Teams Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {userTeams.map((team) => {
-          const isCap = team.captainId === user?.id;
-          const isRosterFull = team.members.length >= 3;
+          const isCap = (team.captainUserId || (team as any).captainId) === user?.id;
+          const membersList = team.members || [];
+          const isRosterFull = membersList.length >= 3;
 
           return (
             <div
@@ -202,13 +203,15 @@ export const TeamsPage: React.FC = () => {
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-slate-400 font-mono">Captain: {team.captainName}</div>
+                      <div className="text-xs text-slate-400 font-mono">
+                        Captain: {team.captain?.displayName || (team as any).captainName || 'Team Captain'}
+                      </div>
                     </div>
                   </div>
 
                   <div className="text-right">
                     <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${isRosterFull ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}`}>
-                      {team.members.length} / 3 Roster
+                      {membersList.length} / 3 Roster
                     </span>
                   </div>
                 </div>
@@ -218,9 +221,9 @@ export const TeamsPage: React.FC = () => {
                   <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
                     Official Squad Members (3-Player Required)
                   </div>
-                  {team.members.map((member, i) => (
+                  {membersList.map((member, i) => (
                     <div
-                      key={member.userId}
+                      key={member.userId || member.id || i}
                       className="flex items-center justify-between p-2.5 rounded-xl bg-[#131b2c] border border-[#1d283e] text-xs"
                     >
                       <div className="flex items-center gap-2">
@@ -229,10 +232,14 @@ export const TeamsPage: React.FC = () => {
                         ) : (
                           <span className="text-slate-500 font-mono text-xs w-4">#{i + 1}</span>
                         )}
-                        <span className="font-semibold text-white">{member.displayName}</span>
+                        <span className="font-semibold text-white">
+                          {member.user?.displayName || (member as any).displayName || 'Competitor'}
+                        </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-amber-300 text-[11px]">{member.bungieId}</span>
+                        <span className="font-mono text-amber-300 text-[11px]">
+                          {member.user?.bungieId || (member as any).bungieId || ''}
+                        </span>
                         <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                       </div>
                     </div>
@@ -252,7 +259,7 @@ export const TeamsPage: React.FC = () => {
                     className="w-full py-2 rounded-xl bg-[#151f33] hover:bg-[#1c2944] text-amber-300 border border-amber-500/30 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
                   >
                     <UserPlus className="w-4 h-4" />
-                    <span>Invite Competitor (+{3 - team.members.length} Slot Available)</span>
+                    <span>Invite Competitor (+{3 - membersList.length} Slot Available)</span>
                   </button>
                 ) : (
                   <div className="flex items-center justify-between text-xs text-slate-400">

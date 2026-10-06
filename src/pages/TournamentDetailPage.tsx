@@ -16,7 +16,7 @@ import {
   Shuffle,
   CreditCard
 } from 'lucide-react';
-import { Tournament, Bracket, Match, TournamentRegistration, Team } from '../types';
+import { Tournament, Bracket, Match, TournamentRegistration, TournamentRegistrationDTO, Team } from '../types';
 import { BracketView } from '../components/BracketView';
 import { useAuth } from '../context/AuthContext';
 import { useRealtime } from '../context/RealtimeContext';
@@ -37,7 +37,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [bracket, setBracket] = useState<Bracket | null>(null);
-  const [registrations, setRegistrations] = useState<TournamentRegistration[]>([]);
+  const [registrations, setRegistrations] = useState<TournamentRegistrationDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'bracket' | 'teams' | 'overview' | 'rules' | 'admin'>('bracket');
 
@@ -346,7 +346,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                       )}
                       <div>
                         <div className="font-display font-bold text-sm text-white">{reg.teamName}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">Captain: {reg.captainName}</div>
+                        <div className="text-[10px] text-slate-400 font-mono">Captain: {reg.captainName || 'Team Captain'}</div>
                       </div>
                     </div>
                     {reg.seed && (
@@ -368,9 +368,13 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                       >
                         <div className="flex items-center gap-1.5 truncate">
                           <span className="text-slate-500">#{i + 1}</span>
-                          <span className="text-slate-200 font-semibold truncate">{member.displayName}</span>
+                          <span className="text-slate-200 font-semibold truncate">
+                            {member.displayNameSnapshot || (member as any).displayName || member.usernameSnapshot || 'Competitor'}
+                          </span>
                         </div>
-                        <span className="text-[11px] text-amber-300/90 font-bold shrink-0">{member.bungieId}</span>
+                        <span className="text-[11px] text-amber-300/90 font-bold shrink-0">
+                          {member.bungieIdSnapshot || (member as any).bungieId || 'Bungie ID Locked'}
+                        </span>
                       </div>
                     ))}
                   </div>

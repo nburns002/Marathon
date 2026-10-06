@@ -4,10 +4,10 @@ import { db } from './db';
 import { User } from '../src/types';
 
 export function getJwtSecret(): string {
-  if (process.env.NODE_ENV === 'production') {
+  if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE !== 'true') {
     const secret = process.env.JWT_SECRET;
     if (!secret || secret.length < 32 || secret === 'marathon_tournament_platform_jwt_secret_2026') {
-      throw new Error('FATAL: Production mode requires a secure JWT_SECRET environment variable with at least 32 characters.');
+      throw new Error('FATAL: Non-demo deployments require a secure JWT_SECRET environment variable with at least 32 characters.');
     }
     return secret;
   }
@@ -20,7 +20,7 @@ export interface AuthenticatedRequest extends Request {
   user?: User;
 }
 
-export function generateToken(user: User): string {
+export function generateToken(user: { id: string; email: string; username: string; role: any }): string {
   return jwt.sign(
     {
       id: user.id,
@@ -42,13 +42,14 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
   const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
-    const user = db.data.users.find((u) => u.id === decoded.id);
+    const userRecord = db.data.users.find((u) => u.id === decoded.id);
 
-    if (!user || user.accountStatus === 'SUSPENDED') {
+    if (!userRecord || userRecord.accountStatus === 'SUSPENDED') {
       return res.status(401).json({ error: 'Account not found or suspended.' });
     }
 
-    req.user = user;
+    const { passwordHash: _, ...safeUser } = userRecord;
+    req.user = safeUser;
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired authentication token.' });
@@ -61,9 +62,10 @@ export function optionalAuth(req: AuthenticatedRequest, res: Response, next: Nex
     const token = authHeader.split(' ')[1];
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
-      const user = db.data.users.find((u) => u.id === decoded.id);
-      if (user && user.accountStatus !== 'SUSPENDED') {
-        req.user = user;
+      const userRecord = db.data.users.find((u) => u.id === decoded.id);
+      if (userRecord && userRecord.accountStatus !== 'SUSPENDED') {
+        const { passwordHash: _, ...safeUser } = userRecord;
+        req.user = safeUser;
       }
     } catch {
       // ignore
