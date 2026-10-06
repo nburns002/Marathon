@@ -304,8 +304,12 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     playersExtracted: 0 | 1 | 2 | 3;
     objectiveCompleted: boolean;
     evidenceUrl?: string;
-  }) => {
-    if (!token) return;
+  }): Promise<{ success: boolean; error?: string }> => {
+    if (!token) {
+      const err = 'Authentication required to submit official score.';
+      showBanner(err);
+      return { success: false, error: err };
+    }
     try {
       const res = await fetch(`/api/matches/${match.id}/score`, {
         method: 'POST',
@@ -316,16 +320,21 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
         body: JSON.stringify(scoreData)
       });
       if (!res.ok) {
-        const data = await res.json();
-        showBanner(data.error || 'Failed to submit score.');
+        const data = await res.json().catch(() => ({}));
+        const err = data.error || 'Failed to submit score.';
+        showBanner(err);
+        return { success: false, error: err };
       } else {
         setShowScoreModal(false);
         showBanner(`Run ${scoreData.runNumber} score submitted successfully!`, 'success');
         fetchMatchData(match.id);
+        return { success: true };
       }
     } catch (err: any) {
       console.error('Score submission error:', err);
-      showBanner(err.message || 'Network error submitting score.');
+      const errMsg = err?.message || 'Network error submitting score.';
+      showBanner(errMsg);
+      return { success: false, error: errMsg };
     }
   };
 

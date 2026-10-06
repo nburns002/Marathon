@@ -56,7 +56,11 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
 
   const fetchTournamentData = async () => {
     try {
-      const res = await fetch(`/api/tournaments/${tournamentId}`);
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/tournaments/${tournamentId}`, { headers });
       if (res.ok) {
         const data = await res.json();
         setTournament(data.tournament);
@@ -79,7 +83,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
       fetchTournamentData();
     });
     return unsub;
-  }, [tournamentId]);
+  }, [tournamentId, token, user]);
 
   if (loading || !tournament) {
     return (

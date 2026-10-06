@@ -694,4 +694,169 @@ describe('User Requests & Defect Resolution Suite', () => {
     assert.equal(captainData.success, true);
     assert.ok(captainData.submission);
   });
+
+  test('9. Tournament detail endpoint: anonymous spectator receives spectator-sanitized bracket, authenticated Team A receives Team A-authorized serialized data', async () => {
+    // Set up a match in the tournament with an unrevealed Team A Run 1
+    const matchId = 'match-tourn-bracket-auth';
+    const match: Match = {
+      id: matchId,
+      tournamentId: tournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 1,
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      teamAName: teamA.name,
+      teamBName: teamB.name,
+      isBye: false,
+      matchStatus: 'RUN_1_PARTIAL',
+      teamARun1: {
+        id: 'sub-a1-secret',
+        matchId,
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 6,
+        extractedCredits: 45000,
+        playersExtracted: 3,
+        objectiveCompleted: true,
+        killPoints: 30,
+        lootPoints: 15,
+        objectivePoints: 5,
+        baseScore: 50,
+        survivalMultiplier: 1.2,
+        finalRunScore: 54.0,
+        submittedBy: captainA.id,
+        submittedByName: captainA.displayName,
+        submittedAt: new Date().toISOString(),
+        locked: false
+      },
+      teamBRun1: null,
+      run1Revealed: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    db.data.matches.push(match);
+
+    db.data.brackets.push({
+      id: 'bracket-auth-test',
+      tournamentId: tournament.id,
+      totalRounds: 1,
+      bracketSize: 2,
+      generatedAt: new Date().toISOString(),
+      matches: [match]
+    });
+
+    // 1. Anonymous request to /api/tournaments/:id (no Bearer token)
+    const anonRes = await fetch(`${baseUrl}/api/tournaments/${tournament.id}`);
+    assert.equal(anonRes.status, 200);
+    const anonData = await anonRes.json();
+    const anonBracketMatch = anonData.bracket?.matches?.find((m: Match) => m.id === matchId);
+    assert.ok(anonBracketMatch, 'Bracket match must exist in response');
+    // For anonymous spectator, teamARun1 should be sanitized indicator (locked: true, no raw stats)
+    assert.equal(anonBracketMatch.teamARun1?.locked, true, 'Anonymous spectator must receive locked indicator for unrevealed Run 1');
+    assert.equal(anonBracketMatch.teamARun1?.runnerKills, undefined, 'Anonymous spectator must NOT see raw runnerKills');
+    assert.equal(anonBracketMatch.teamARun1?.finalRunScore, undefined, 'Anonymous spectator must NOT see finalRunScore');
+
+    // 2. Authenticated Team A captain request to /api/tournaments/:id (with Bearer token)
+    const teamARes = await fetch(`${baseUrl}/api/tournaments/${tournament.id}`, {
+      headers: {
+        Authorization: `Bearer ${captainAToken}`
+      }
+    });
+    assert.equal(teamARes.status, 200);
+    const teamAData = await teamARes.json();
+    const teamABracketMatch = teamAData.bracket?.matches?.find((m: Match) => m.id === matchId);
+    assert.ok(teamABracketMatch, 'Bracket match must exist');
+    // For Team A member, teamARun1 is authorized and fully visible
+    assert.equal(teamABracketMatch.teamARun1?.locked, false, 'Team A viewer should have unlocked Run 1');
+    assert.equal(teamABracketMatch.teamARun1?.runnerKills, 6, 'Team A viewer must see authoritative runnerKills');
+    assert.equal(teamABracketMatch.teamARun1?.finalRunScore, 54.0, 'Team A viewer must see authoritative finalRunScore');
+
+    // 3. Authenticated Team B captain request to /api/tournaments/:id (opponent)
+    const teamBRes = await fetch(`${baseUrl}/api/tournaments/${tournament.id}`, {
+      headers: {
+        Authorization: `Bearer ${captainBToken}`
+      }
+    });
+    assert.equal(teamBRes.status, 200);
+    const teamBData = await teamBRes.json();
+    const teamBBracketMatch = teamBData.bracket?.matches?.find((m: Match) => m.id === matchId);
+    assert.ok(teamBBracketMatch);
+    // For Team B (opponent), Team A's Run 1 must be locked/sanitized
+    assert.equal(teamBBracketMatch.teamARun1?.locked, true, 'Opponent Team B must receive locked indicator');
+    assert.equal(teamBBracketMatch.teamARun1?.runnerKills, undefined, 'Opponent Team B must NOT see Team A runnerKills');
+  });
+
+  test('10. Score submission callback contract: failure returns { success: false, error }, success returns { success: true }', async () => {
+    const matchId = 'match-callback-contract';
+    const match: Match = {
+      id: matchId,
+      tournamentId: tournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 1,
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      teamAName: teamA.name,
+      teamBName: teamB.name,
+      isBye: false,
+      matchStatus: 'ACTIVE',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    db.data.matches.push(match);
+
+    // Simulate handleScoreSubmit logic against real endpoint:
+    async function simulateHandleScoreSubmit(
+      matchTargetId: string,
+      tokenVal: string | null,
+      scoreData: any
+    ): Promise<{ success: boolean; error?: string }> {
+      if (!tokenVal) {
+        return { success: false, error: 'Authentication required to submit official score.' };
+      }
+      try {
+        const res = await fetch(`${baseUrl}/api/matches/${matchTargetId}/score`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${tokenVal}`
+          },
+          body: JSON.stringify(scoreData)
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          return { success: false, error: data.error || 'Failed to submit score.' };
+        }
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Network error submitting score.' };
+      }
+    }
+
+    // Case 1: Rejection returns { success: false, error: <backend error> }
+    const rejResult = await simulateHandleScoreSubmit(matchId, captainAToken, {
+      teamId: teamA.id,
+      runNumber: 1,
+      runnerKills: -5, // Invalid negative kills
+      extractedCredits: 1000,
+      playersExtracted: 3,
+      objectiveCompleted: true
+    });
+    assert.equal(rejResult.success, false);
+    assert.ok(rejResult.error);
+    assert.match(rejResult.error, /non-negative/i);
+
+    // Case 2: Success returns { success: true }
+    const succResult = await simulateHandleScoreSubmit(matchId, captainAToken, {
+      teamId: teamA.id,
+      runNumber: 1,
+      runnerKills: 5,
+      extractedCredits: 1000,
+      playersExtracted: 3,
+      objectiveCompleted: true
+    });
+    assert.equal(succResult.success, true);
+    assert.equal(succResult.error, undefined);
+  });
 });
