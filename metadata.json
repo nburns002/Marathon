@@ -1,0 +1,6 @@
+{
+  "name": "Marathon Competitive Tournament Platform",
+  "description": "Production-ready esports tournament platform for Marathon featuring automated match rooms, live score racing, ready check timers, dispute resolution, random bracket generation, and Bungie ID roster tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
