@@ -364,6 +364,37 @@ export function reconcileMatchAdvancement(
 
   // Case 1: Winner cleared (e.g. reverse forfeit)
   if (!newWinnerTeamId) {
+    // If the slot is already empty, treat the reversal as an idempotent safe no-op.
+    if (!currentSlotOccupant) {
+      return {
+        success: true,
+        updatedMatches: matches,
+        downstreamMatchId: nextMatch.id,
+        auditEvent: {
+          action: 'ADVANCEMENT_REVERSED',
+          sourceMatchId: sourceMatch.id,
+          sourceRound: sourceMatch.round,
+          previousWinnerTeamId,
+          newWinnerTeamId: null,
+          nextMatchId: nextMatch.id,
+          nextMatchSlot: slot,
+          reversalReason: `${reason} (Idempotent: downstream slot already empty)`,
+          timestamp: nowIso
+        }
+      };
+    }
+
+    // If currentSlotOccupant is non-null and does not equal previousWinnerTeamId:
+    // Return success: false and a bracket-integrity conflict error without clearing the unexpected occupant.
+    if (currentSlotOccupant !== previousWinnerTeamId) {
+      return {
+        success: false,
+        error: `Bracket integrity conflict: downstream slot ${slot} in match ${nextMatch.id} is occupied by team ${currentSlotOccupant}, not previous winner ${previousWinnerTeamId}. Reversal rejected.`,
+        updatedMatches: matches,
+        downstreamMatchId: nextMatch.id
+      };
+    }
+
     if (slot === 'A') {
       nextMatch.teamAId = null;
       nextMatch.teamAName = null;

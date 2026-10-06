@@ -141,19 +141,6 @@ export function processTimerWorkerTick() {
           match.updatedAt = nowIso;
           hasChanges = true;
 
-          const sysMsg = `SYSTEM — Team ${match.teamBName || 'Team B'} failed to complete the Ready Check within the allotted 10 minutes. ${match.teamAName} has been awarded the match by forfeit.`;
-          db.data.matchMessages.push({
-            id: uuidv4(),
-            matchId: match.id,
-            userId: 'SYSTEM',
-            userName: 'SYSTEM',
-            userRole: 'SYSTEM',
-            type: 'FORFEIT',
-            message: sysMsg,
-            createdAt: nowIso
-          });
-
-          // Auto-advance Team A
           const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
           const advanceRes = advanceMatchWinner(
             db.data.matches,
@@ -164,49 +151,111 @@ export function processTimerWorkerTick() {
             'Opponent Ready Check Forfeit'
           );
 
-          if (advanceRes.auditEvent) {
+          if (!advanceRes.success) {
+            match.matchStatus = 'ADMIN_REVIEW';
+            match.adminNotes = `Automatic advancement blocked: ${advanceRes.error}`;
+
             db.data.auditLogs.push({
               id: uuidv4(),
               actorType: 'SYSTEM',
               actorId: 'SYSTEM',
               actorName: 'Tournament Engine',
-              action: advanceRes.auditEvent.action,
+              action: 'BRACKET_INTEGRITY_ERROR',
               entityType: 'MATCH',
               entityId: match.id,
-              metadata: advanceRes.auditEvent,
-              timestamp: advanceRes.auditEvent.timestamp
+              metadata: {
+                sourceMatchId: match.id,
+                sourceRound: match.round,
+                intendedWinnerTeamId: match.teamAId,
+                error: advanceRes.error,
+                advancementPath: 'READY_CHECK_FORFEIT_TEAM_A',
+                timestamp: nowIso
+              },
+              timestamp: nowIso
             });
-          }
 
-          if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
-            if (tourn) {
-              tourn.status = 'COMPLETED';
-              tourn.championTeamId = advanceRes.championTeamId;
-              tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
-              tourn.updatedAt = nowIso;
+            db.data.adminTickets.push({
+              id: `tkt-${uuidv4().slice(0, 8)}`,
+              matchId: match.id,
+              tournamentId: match.tournamentId,
+              requestingUserId: 'SYSTEM',
+              requestingUserName: 'Tournament Engine',
+              category: 'BRACKET INTEGRITY CONFLICT',
+              description: `Automatic advancement failed for match ${match.id} (Round ${match.round}). Downstream conflict: ${advanceRes.error}`,
+              status: 'OPEN',
+              createdAt: nowIso,
+              updatedAt: nowIso
+            });
+
+            db.data.matchMessages.push({
+              id: uuidv4(),
+              matchId: match.id,
+              userId: 'SYSTEM',
+              userName: 'SYSTEM',
+              userRole: 'SYSTEM',
+              type: 'SYSTEM',
+              message: `SYSTEM — BRACKET INTEGRITY ALERT: Team ${match.teamBName || 'Team B'} forfeited, but automatic advancement into downstream round failed: ${advanceRes.error}. Progression frozen for Administrator Review.`,
+              createdAt: nowIso
+            });
+
+            broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
+          } else {
+            const sysMsg = `SYSTEM — Team ${match.teamBName || 'Team B'} failed to complete the Ready Check within the allotted 10 minutes. ${match.teamAName} has been awarded the match by forfeit.`;
+            db.data.matchMessages.push({
+              id: uuidv4(),
+              matchId: match.id,
+              userId: 'SYSTEM',
+              userName: 'SYSTEM',
+              userRole: 'SYSTEM',
+              type: 'FORFEIT',
+              message: sysMsg,
+              createdAt: nowIso
+            });
+
+            if (advanceRes.auditEvent) {
+              db.data.auditLogs.push({
+                id: uuidv4(),
+                actorType: 'SYSTEM',
+                actorId: 'SYSTEM',
+                actorName: 'Tournament Engine',
+                action: advanceRes.auditEvent.action,
+                entityType: 'MATCH',
+                entityId: match.id,
+                metadata: advanceRes.auditEvent,
+                timestamp: advanceRes.auditEvent.timestamp
+              });
             }
+
+            if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
+              if (tourn) {
+                tourn.status = 'COMPLETED';
+                tourn.championTeamId = advanceRes.championTeamId;
+                tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
+                tourn.updatedAt = nowIso;
+              }
+            }
+
+            if (tourn) {
+              tourn.currentRound = calculateTournamentCurrentRound(
+                db.data.matches.filter((m) => m.tournamentId === tourn.id),
+                tourn.currentRound || 1
+              );
+            }
+
+            db.data.auditLogs.push({
+              id: uuidv4(),
+              actorType: 'SYSTEM',
+              actorId: 'SYSTEM',
+              actorName: 'Tournament Engine',
+              action: 'AUTO_FORFEIT_ISSUED',
+              entityType: 'MATCH',
+              entityId: match.id,
+              metadata: { winnerTeamId: match.teamAId, loserTeamId: match.teamBId, reason: match.forfeitReason },
+              timestamp: nowIso
+            });
+
+            broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
           }
-
-          if (tourn) {
-            tourn.currentRound = calculateTournamentCurrentRound(
-              db.data.matches.filter((m) => m.tournamentId === tourn.id),
-              tourn.currentRound || 1
-            );
-          }
-
-          db.data.auditLogs.push({
-            id: uuidv4(),
-            actorType: 'SYSTEM',
-            actorId: 'SYSTEM',
-            actorName: 'Tournament Engine',
-            action: 'AUTO_FORFEIT_ISSUED',
-            entityType: 'MATCH',
-            entityId: match.id,
-            metadata: { winnerTeamId: match.teamAId, loserTeamId: match.teamBId, reason: match.forfeitReason },
-            timestamp: nowIso
-          });
-
-          broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
         } else if (!teamAReady && teamBReady && match.teamAId && match.teamBId) {
           // Team B Wins by Forfeit
           match.matchStatus = 'FORFEIT';
@@ -216,19 +265,6 @@ export function processTimerWorkerTick() {
           match.updatedAt = nowIso;
           hasChanges = true;
 
-          const sysMsg = `SYSTEM — Team ${match.teamAName || 'Team A'} failed to complete the Ready Check within the allotted 10 minutes. ${match.teamBName} has been awarded the match by forfeit.`;
-          db.data.matchMessages.push({
-            id: uuidv4(),
-            matchId: match.id,
-            userId: 'SYSTEM',
-            userName: 'SYSTEM',
-            userRole: 'SYSTEM',
-            type: 'FORFEIT',
-            message: sysMsg,
-            createdAt: nowIso
-          });
-
-          // Auto-advance Team B
           const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
           const advanceRes = advanceMatchWinner(
             db.data.matches,
@@ -239,49 +275,111 @@ export function processTimerWorkerTick() {
             'Opponent Ready Check Forfeit'
           );
 
-          if (advanceRes.auditEvent) {
+          if (!advanceRes.success) {
+            match.matchStatus = 'ADMIN_REVIEW';
+            match.adminNotes = `Automatic advancement blocked: ${advanceRes.error}`;
+
             db.data.auditLogs.push({
               id: uuidv4(),
               actorType: 'SYSTEM',
               actorId: 'SYSTEM',
               actorName: 'Tournament Engine',
-              action: advanceRes.auditEvent.action,
+              action: 'BRACKET_INTEGRITY_ERROR',
               entityType: 'MATCH',
               entityId: match.id,
-              metadata: advanceRes.auditEvent,
-              timestamp: advanceRes.auditEvent.timestamp
+              metadata: {
+                sourceMatchId: match.id,
+                sourceRound: match.round,
+                intendedWinnerTeamId: match.teamBId,
+                error: advanceRes.error,
+                advancementPath: 'READY_CHECK_FORFEIT_TEAM_B',
+                timestamp: nowIso
+              },
+              timestamp: nowIso
             });
-          }
 
-          if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
-            if (tourn) {
-              tourn.status = 'COMPLETED';
-              tourn.championTeamId = advanceRes.championTeamId;
-              tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
-              tourn.updatedAt = nowIso;
+            db.data.adminTickets.push({
+              id: `tkt-${uuidv4().slice(0, 8)}`,
+              matchId: match.id,
+              tournamentId: match.tournamentId,
+              requestingUserId: 'SYSTEM',
+              requestingUserName: 'Tournament Engine',
+              category: 'BRACKET INTEGRITY CONFLICT',
+              description: `Automatic advancement failed for match ${match.id} (Round ${match.round}). Downstream conflict: ${advanceRes.error}`,
+              status: 'OPEN',
+              createdAt: nowIso,
+              updatedAt: nowIso
+            });
+
+            db.data.matchMessages.push({
+              id: uuidv4(),
+              matchId: match.id,
+              userId: 'SYSTEM',
+              userName: 'SYSTEM',
+              userRole: 'SYSTEM',
+              type: 'SYSTEM',
+              message: `SYSTEM — BRACKET INTEGRITY ALERT: Team ${match.teamAName || 'Team A'} forfeited, but automatic advancement into downstream round failed: ${advanceRes.error}. Progression frozen for Administrator Review.`,
+              createdAt: nowIso
+            });
+
+            broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
+          } else {
+            const sysMsg = `SYSTEM — Team ${match.teamAName || 'Team A'} failed to complete the Ready Check within the allotted 10 minutes. ${match.teamBName} has been awarded the match by forfeit.`;
+            db.data.matchMessages.push({
+              id: uuidv4(),
+              matchId: match.id,
+              userId: 'SYSTEM',
+              userName: 'SYSTEM',
+              userRole: 'SYSTEM',
+              type: 'FORFEIT',
+              message: sysMsg,
+              createdAt: nowIso
+            });
+
+            if (advanceRes.auditEvent) {
+              db.data.auditLogs.push({
+                id: uuidv4(),
+                actorType: 'SYSTEM',
+                actorId: 'SYSTEM',
+                actorName: 'Tournament Engine',
+                action: advanceRes.auditEvent.action,
+                entityType: 'MATCH',
+                entityId: match.id,
+                metadata: advanceRes.auditEvent,
+                timestamp: advanceRes.auditEvent.timestamp
+              });
             }
+
+            if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
+              if (tourn) {
+                tourn.status = 'COMPLETED';
+                tourn.championTeamId = advanceRes.championTeamId;
+                tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
+                tourn.updatedAt = nowIso;
+              }
+            }
+
+            if (tourn) {
+              tourn.currentRound = calculateTournamentCurrentRound(
+                db.data.matches.filter((m) => m.tournamentId === tourn.id),
+                tourn.currentRound || 1
+              );
+            }
+
+            db.data.auditLogs.push({
+              id: uuidv4(),
+              actorType: 'SYSTEM',
+              actorId: 'SYSTEM',
+              actorName: 'Tournament Engine',
+              action: 'AUTO_FORFEIT_ISSUED',
+              entityType: 'MATCH',
+              entityId: match.id,
+              metadata: { winnerTeamId: match.teamBId, loserTeamId: match.teamAId, reason: match.forfeitReason },
+              timestamp: nowIso
+            });
+
+            broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
           }
-
-          if (tourn) {
-            tourn.currentRound = calculateTournamentCurrentRound(
-              db.data.matches.filter((m) => m.tournamentId === tourn.id),
-              tourn.currentRound || 1
-            );
-          }
-
-          db.data.auditLogs.push({
-            id: uuidv4(),
-            actorType: 'SYSTEM',
-            actorId: 'SYSTEM',
-            actorName: 'Tournament Engine',
-            action: 'AUTO_FORFEIT_ISSUED',
-            entityType: 'MATCH',
-            entityId: match.id,
-            metadata: { winnerTeamId: match.teamBId, loserTeamId: match.teamAId, reason: match.forfeitReason },
-            timestamp: nowIso
-          });
-
-          broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
         } else if (!teamAReady && !teamBReady) {
           // Double Forfeit / Admin Review
           match.matchStatus = 'DOUBLE_FORFEIT';
@@ -437,27 +535,10 @@ export function processTimerWorkerTick() {
               createdAt: nowIso
             });
           } else {
-            // Definite winner!
-            match.matchStatus = 'FINAL';
-            match.winnerTeamId = winnerResult.winnerTeamId;
-            match.loserTeamId = winnerResult.winnerTeamId === match.teamAId ? match.teamBId : match.teamAId;
-            match.updatedAt = nowIso;
-            hasChanges = true;
-
-            const winningTeamName = match.winnerTeamId === match.teamAId ? match.teamAName : match.teamBName;
-
-            db.data.matchMessages.push({
-              id: uuidv4(),
-              matchId: match.id,
-              userId: 'SYSTEM',
-              userName: 'SYSTEM',
-              userRole: 'SYSTEM',
-              type: 'SYSTEM',
-              message: `SYSTEM — 10-Minute Dispute Window expired without objection. Match finalized!\nWinner: ${winningTeamName} (${winnerResult.reason})\nAdvancing to next round automatically.`,
-              createdAt: nowIso
-            });
-
+            // Definite winner determined by score/tiebreakers
+            const winningTeamName = winnerResult.winnerTeamId === match.teamAId ? match.teamAName : match.teamBName;
             const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+
             const advanceRes = advanceMatchWinner(
               db.data.matches,
               match.id,
@@ -467,62 +548,133 @@ export function processTimerWorkerTick() {
               `Dispute Window Expired: ${winnerResult.reason}`
             );
 
-            if (advanceRes.auditEvent) {
+            if (!advanceRes.success) {
+              match.matchStatus = 'ADMIN_REVIEW';
+              match.winnerTeamId = winnerResult.winnerTeamId;
+              match.loserTeamId = winnerResult.winnerTeamId === match.teamAId ? match.teamBId : match.teamAId;
+              match.adminNotes = `Automatic advancement blocked: ${advanceRes.error}`;
+              match.updatedAt = nowIso;
+              hasChanges = true;
+
               db.data.auditLogs.push({
                 id: uuidv4(),
                 actorType: 'SYSTEM',
                 actorId: 'SYSTEM',
                 actorName: 'Tournament Engine',
-                action: advanceRes.auditEvent.action,
+                action: 'BRACKET_INTEGRITY_ERROR',
                 entityType: 'MATCH',
                 entityId: match.id,
-                metadata: advanceRes.auditEvent,
-                timestamp: advanceRes.auditEvent.timestamp
+                metadata: {
+                  sourceMatchId: match.id,
+                  sourceRound: match.round,
+                  intendedWinnerTeamId: winnerResult.winnerTeamId,
+                  error: advanceRes.error,
+                  advancementPath: 'DISPUTE_EXPIRATION_AUTO_FINALIZATION',
+                  timestamp: nowIso
+                },
+                timestamp: nowIso
               });
-            }
 
-            if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
-              if (tourn) {
-                tourn.status = 'COMPLETED';
-                tourn.championTeamId = advanceRes.championTeamId;
-                tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
-                tourn.updatedAt = nowIso;
+              db.data.adminTickets.push({
+                id: `tkt-${uuidv4().slice(0, 8)}`,
+                matchId: match.id,
+                tournamentId: match.tournamentId,
+                requestingUserId: 'SYSTEM',
+                requestingUserName: 'Tournament Engine',
+                category: 'BRACKET INTEGRITY CONFLICT',
+                description: `Automatic advancement failed for match ${match.id} (Round ${match.round}). Downstream conflict: ${advanceRes.error}`,
+                status: 'OPEN',
+                createdAt: nowIso,
+                updatedAt: nowIso
+              });
 
+              db.data.matchMessages.push({
+                id: uuidv4(),
+                matchId: match.id,
+                userId: 'SYSTEM',
+                userName: 'SYSTEM',
+                userRole: 'SYSTEM',
+                type: 'SYSTEM',
+                message: `SYSTEM — BRACKET INTEGRITY ALERT: Winner determined (${winningTeamName}), but automatic advancement to downstream round failed: ${advanceRes.error}. Progression frozen for Administrator Review.`,
+                createdAt: nowIso
+              });
+
+              broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
+            } else {
+              match.matchStatus = 'FINAL';
+              match.winnerTeamId = winnerResult.winnerTeamId;
+              match.loserTeamId = winnerResult.winnerTeamId === match.teamAId ? match.teamBId : match.teamAId;
+              match.updatedAt = nowIso;
+              hasChanges = true;
+
+              db.data.matchMessages.push({
+                id: uuidv4(),
+                matchId: match.id,
+                userId: 'SYSTEM',
+                userName: 'SYSTEM',
+                userRole: 'SYSTEM',
+                type: 'SYSTEM',
+                message: `SYSTEM — 10-Minute Dispute Window expired without objection. Match finalized!\nWinner: ${winningTeamName} (${winnerResult.reason})\nAdvancing to next round automatically.`,
+                createdAt: nowIso
+              });
+
+              if (advanceRes.auditEvent) {
                 db.data.auditLogs.push({
                   id: uuidv4(),
                   actorType: 'SYSTEM',
                   actorId: 'SYSTEM',
                   actorName: 'Tournament Engine',
-                  action: 'TOURNAMENT_CHAMPION_CROWNED',
-                  entityType: 'TOURNAMENT',
-                  entityId: tourn.id,
-                  metadata: { championTeamId: advanceRes.championTeamId, championTeamName: tourn.championTeamName },
-                  timestamp: nowIso
+                  action: advanceRes.auditEvent.action,
+                  entityType: 'MATCH',
+                  entityId: match.id,
+                  metadata: advanceRes.auditEvent,
+                  timestamp: advanceRes.auditEvent.timestamp
                 });
               }
-            }
 
-            if (tourn) {
-              tourn.currentRound = calculateTournamentCurrentRound(
-                db.data.matches.filter((m) => m.tournamentId === tourn.id),
-                tourn.currentRound || 1
-              );
-            }
+              if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
+                if (tourn) {
+                  tourn.status = 'COMPLETED';
+                  tourn.championTeamId = advanceRes.championTeamId;
+                  tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
+                  tourn.updatedAt = nowIso;
 
-            db.data.auditLogs.push({
-              id: uuidv4(),
-              actorType: 'SYSTEM',
-              actorId: 'SYSTEM',
-              actorName: 'Tournament Engine',
-              action: 'MATCH_AUTO_FINALIZED',
-              entityType: 'MATCH',
-              entityId: match.id,
-              metadata: { winnerTeamId: winnerResult.winnerTeamId, reason: winnerResult.reason },
-              timestamp: nowIso
-            });
+                  db.data.auditLogs.push({
+                    id: uuidv4(),
+                    actorType: 'SYSTEM',
+                    actorId: 'SYSTEM',
+                    actorName: 'Tournament Engine',
+                    action: 'TOURNAMENT_CHAMPION_CROWNED',
+                    entityType: 'TOURNAMENT',
+                    entityId: tourn.id,
+                    metadata: { championTeamId: advanceRes.championTeamId, championTeamName: tourn.championTeamName },
+                    timestamp: nowIso
+                  });
+                }
+              }
+
+              if (tourn) {
+                tourn.currentRound = calculateTournamentCurrentRound(
+                  db.data.matches.filter((m) => m.tournamentId === tourn.id),
+                  tourn.currentRound || 1
+                );
+              }
+
+              db.data.auditLogs.push({
+                id: uuidv4(),
+                actorType: 'SYSTEM',
+                actorId: 'SYSTEM',
+                actorName: 'Tournament Engine',
+                action: 'MATCH_AUTO_FINALIZED',
+                entityType: 'MATCH',
+                entityId: match.id,
+                metadata: { winnerTeamId: winnerResult.winnerTeamId, reason: winnerResult.reason },
+                timestamp: nowIso
+              });
+
+              broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
+            }
           }
-
-          broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
         }
       }
     }

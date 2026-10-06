@@ -69,10 +69,12 @@ after(() => {
   if (server) {
     server.close();
   }
-  // Restore original database file
+  // Restore original database file or clean up if it didn't exist
   if (initialDbBackup) {
     fs.writeFileSync(DB_FILE, initialDbBackup, 'utf-8');
     db.data = JSON.parse(initialDbBackup);
+  } else if (fs.existsSync(DB_FILE)) {
+    fs.unlinkSync(DB_FILE);
   }
 });
 
@@ -1220,5 +1222,484 @@ describe('Authoritative Match Advancement & Integrity Suite', () => {
     assert.ok(finalizedMatch);
     assert.strictEqual(finalizedMatch.matchStatus, 'FINAL');
     assert.strictEqual(finalizedMatch.winnerTeamId, teamA.id);
+  });
+
+  // Test 15: TimerWorker dispute-window finalization failure records BRACKET_INTEGRITY_ERROR and freezes match
+  test('15. TimerWorker dispute-window finalization failure records BRACKET_INTEGRITY_ERROR, creates admin ticket, and freezes match in ADMIN_REVIEW', () => {
+    const conflictDownstream: Match = {
+      id: 'm-conflict-downstream-disp',
+      tournamentId: testTournament.id,
+      round: 2,
+      matchNumber: 2,
+      bracketPosition: 0,
+      nextMatchId: null,
+      nextMatchSlot: null,
+      teamAId: teamC.id, // Conflict! Slot A occupied by Team C instead of Team A
+      teamAName: teamC.name,
+      teamBId: null,
+      teamBName: null,
+      isBye: false,
+      matchStatus: 'WAITING_FOR_ROUND',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const sourceMatch: Match = {
+      id: 'm-source-disp-conflict',
+      tournamentId: testTournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 0,
+      nextMatchId: conflictDownstream.id,
+      nextMatchSlot: 'A',
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      teamAName: teamA.name,
+      teamBName: teamB.name,
+      isBye: false,
+      matchStatus: 'RESULT_PENDING',
+      disputeDeadlineAt: new Date(Date.now() - 1000).toISOString(), // expired
+      teamARun1: {
+        id: 'rA-disp',
+        matchId: 'm-source-disp-conflict',
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 5,
+        extractedCredits: 1000,
+        playersExtracted: 3,
+        objectiveCompleted: true,
+        killPoints: 10,
+        lootPoints: 10,
+        objectivePoints: 5,
+        baseScore: 25,
+        survivalMultiplier: 1.5,
+        finalRunScore: 37.5,
+        submittedBy: captainA.id,
+        submittedByName: captainA.username,
+        submittedAt: new Date().toISOString(),
+        locked: true
+      },
+      teamBRun1: {
+        id: 'rB-disp',
+        matchId: 'm-source-disp-conflict',
+        teamId: teamB.id,
+        runNumber: 1,
+        runnerKills: 1,
+        extractedCredits: 200,
+        playersExtracted: 1,
+        objectiveCompleted: false,
+        killPoints: 2,
+        lootPoints: 2,
+        objectivePoints: 0,
+        baseScore: 4,
+        survivalMultiplier: 1.1,
+        finalRunScore: 4.4,
+        submittedBy: captainB.id,
+        submittedByName: captainB.username,
+        submittedAt: new Date().toISOString(),
+        locked: true
+      },
+      finalScoreA: 37.5,
+      finalScoreB: 4.4,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.data.matches.push(sourceMatch, conflictDownstream);
+
+    // Run authoritative tick
+    processTimerWorkerTick();
+
+    // Verify source match was NOT marked as successfully advanced, but moved to ADMIN_REVIEW
+    assert.strictEqual(sourceMatch.matchStatus, 'ADMIN_REVIEW');
+    assert.match(sourceMatch.adminNotes || '', /blocked/i);
+
+    // Verify BRACKET_INTEGRITY_ERROR audit event
+    const integrityAudit = db.data.auditLogs.find(
+      (a) => a.action === 'BRACKET_INTEGRITY_ERROR' && a.entityId === sourceMatch.id
+    );
+    assert.ok(integrityAudit, 'BRACKET_INTEGRITY_ERROR audit log must be recorded');
+    assert.match(integrityAudit.metadata?.error || '', /bracket integrity conflict/i);
+
+    // Verify AdminTicket was generated
+    const ticket = db.data.adminTickets.find((t) => t.matchId === sourceMatch.id);
+    assert.ok(ticket, 'Admin ticket must be created identifying the conflict');
+    assert.strictEqual(ticket.category, 'BRACKET INTEGRITY CONFLICT');
+
+    // Verify tournament champion was NOT crowned
+    assert.strictEqual(testTournament.status, 'LIVE');
+    assert.ok(!testTournament.championTeamId);
+  });
+
+  // Test 16: TimerWorker ready-check forfeit failure records BRACKET_INTEGRITY_ERROR and freezes match
+  test('16. TimerWorker ready-check forfeit failure records BRACKET_INTEGRITY_ERROR and freezes match in ADMIN_REVIEW', () => {
+    const conflictDownstream: Match = {
+      id: 'm-conflict-downstream-rc',
+      tournamentId: testTournament.id,
+      round: 2,
+      matchNumber: 2,
+      bracketPosition: 0,
+      nextMatchId: null,
+      nextMatchSlot: null,
+      teamAId: teamC.id, // Conflict!
+      teamAName: teamC.name,
+      teamBId: null,
+      isBye: false,
+      matchStatus: 'WAITING_FOR_ROUND',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const sourceMatch: Match = {
+      id: 'm-rc-forfeit-conflict',
+      tournamentId: testTournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 0,
+      nextMatchId: conflictDownstream.id,
+      nextMatchSlot: 'A',
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      teamAName: teamA.name,
+      teamBName: teamB.name,
+      isBye: false,
+      matchStatus: 'READY_CHECK',
+      teamAReady: true,
+      teamBReady: false,
+      readyDeadlineAt: new Date(Date.now() - 1000).toISOString(), // expired
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.data.matches.push(sourceMatch, conflictDownstream);
+
+    processTimerWorkerTick();
+
+    assert.strictEqual(sourceMatch.matchStatus, 'ADMIN_REVIEW');
+    assert.match(sourceMatch.adminNotes || '', /blocked/i);
+
+    const integrityAudit = db.data.auditLogs.find(
+      (a) => a.action === 'BRACKET_INTEGRITY_ERROR' && a.entityId === sourceMatch.id
+    );
+    assert.ok(integrityAudit, 'BRACKET_INTEGRITY_ERROR audit log must be recorded on forfeit failure');
+
+    const ticket = db.data.adminTickets.find((t) => t.matchId === sourceMatch.id);
+    assert.ok(ticket, 'Admin ticket must be created for forfeit conflict');
+  });
+
+  // Test 17: Reversal slot validation (normal, repeated empty, unexpected third team)
+  test('17. reconcileMatchAdvancement safely handles normal reversal, repeated idempotent reversal when empty, and rejects unexpected third team', () => {
+    const teamLookup = {
+      [teamA.id]: { name: teamA.name },
+      [teamB.id]: { name: teamB.name },
+      [teamC.id]: { name: teamC.name }
+    };
+
+    const downstream: Match = {
+      id: 'm-reversal-downstream',
+      tournamentId: testTournament.id,
+      round: 2,
+      matchNumber: 2,
+      bracketPosition: 0,
+      nextMatchId: null,
+      nextMatchSlot: null,
+      teamAId: teamA.id,
+      teamAName: teamA.name,
+      teamBId: null,
+      isBye: false,
+      matchStatus: 'WAITING_FOR_ROUND',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const source: Match = {
+      id: 'm-reversal-source',
+      tournamentId: testTournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 0,
+      nextMatchId: downstream.id,
+      nextMatchSlot: 'A',
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      isBye: false,
+      matchStatus: 'FORFEIT',
+      winnerTeamId: teamA.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const matches = [source, downstream];
+
+    // Part A: Normal Reversal
+    const resA = reconcileMatchAdvancement(matches, source, teamA.id, null, teamLookup);
+    assert.strictEqual(resA.success, true);
+    assert.strictEqual(downstream.teamAId, null);
+    assert.strictEqual(downstream.matchStatus, 'WAITING_FOR_ROUND');
+
+    // Part B: Repeated reversal when slot already empty (idempotent safe no-op)
+    const resB = reconcileMatchAdvancement(matches, source, teamA.id, null, teamLookup);
+    assert.strictEqual(resB.success, true);
+    assert.strictEqual(downstream.teamAId, null);
+
+    // Part C: Reversal when slot contains unexpected third team (Team C)
+    downstream.teamAId = teamC.id;
+    downstream.teamAName = teamC.name;
+
+    const resC = reconcileMatchAdvancement(matches, source, teamA.id, null, teamLookup);
+    assert.strictEqual(resC.success, false);
+    assert.match(resC.error || '', /bracket integrity conflict/i);
+    // Crucial assertion: unexpected occupant is NOT cleared or altered!
+    assert.strictEqual(downstream.teamAId, teamC.id);
+    assert.strictEqual(downstream.teamAName, teamC.name);
+  });
+
+  // Test 18: Admin score override input validation
+  test('18. POST /api/admin/matches/:id/override-score validates teamId, runNumber, and run submission existence', async () => {
+    const match: Match = {
+      id: 'm-override-val-test',
+      tournamentId: testTournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 0,
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      teamAName: teamA.name,
+      teamBName: teamB.name,
+      isBye: false,
+      matchStatus: 'ACTIVE',
+      teamARun1: {
+        id: 'rA1-test',
+        matchId: 'm-override-val-test',
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 2,
+        extractedCredits: 500,
+        playersExtracted: 3,
+        objectiveCompleted: false,
+        killPoints: 4,
+        lootPoints: 5,
+        objectivePoints: 0,
+        baseScore: 9,
+        survivalMultiplier: 1.5,
+        finalRunScore: 13.5,
+        submittedBy: captainA.id,
+        submittedByName: captainA.username,
+        submittedAt: new Date().toISOString(),
+        locked: true
+      },
+      // Team A Run 2 is NOT submitted
+      // Team B has no runs submitted
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.data.matches.push(match);
+
+    // Case 1: Invalid teamId (not teamAId and not teamBId)
+    const resInvalidTeam = await fetch(`${baseUrl}/api/admin/matches/${match.id}/override-score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        teamId: 'invalid-third-party-team',
+        runNumber: 1,
+        runnerKills: 5,
+        extractedCredits: 1000,
+        playersExtracted: 3,
+        objectiveCompleted: true,
+        reason: 'Attempt override with bogus team'
+      })
+    });
+    assert.strictEqual(resInvalidTeam.status, 400);
+    const bodyTeam = await resInvalidTeam.json();
+    assert.match(bodyTeam.error, /invalid teamId/i);
+
+    // Case 2: Invalid runNumber (not 1 or 2)
+    const resInvalidRun = await fetch(`${baseUrl}/api/admin/matches/${match.id}/override-score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        teamId: teamA.id,
+        runNumber: 3, // Invalid
+        runnerKills: 5,
+        extractedCredits: 1000,
+        playersExtracted: 3,
+        objectiveCompleted: true,
+        reason: 'Attempt override with run 3'
+      })
+    });
+    assert.strictEqual(resInvalidRun.status, 400);
+    const bodyRun = await resInvalidRun.json();
+    assert.match(bodyRun.error, /invalid runNumber/i);
+
+    // Case 3: Target RunSubmission does not exist (Team A Run 2)
+    const resNonExistent = await fetch(`${baseUrl}/api/admin/matches/${match.id}/override-score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        teamId: teamA.id,
+        runNumber: 2, // Does not exist yet!
+        runnerKills: 5,
+        extractedCredits: 1000,
+        playersExtracted: 3,
+        objectiveCompleted: true,
+        reason: 'Attempt override on nonexistent run 2'
+      })
+    });
+    assert.strictEqual(resNonExistent.status, 400);
+    const bodyNonExistent = await resNonExistent.json();
+    assert.match(bodyNonExistent.error, /does not exist/i);
+
+    // Case 4: Valid override on existing Run 1
+    const resValid = await fetch(`${baseUrl}/api/admin/matches/${match.id}/override-score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 6,
+        extractedCredits: 1500,
+        playersExtracted: 3,
+        objectiveCompleted: true,
+        reason: 'Referee correction of kill tally'
+      })
+    });
+    assert.strictEqual(resValid.status, 200);
+    assert.strictEqual(match.teamARun1?.runnerKills, 6);
+  });
+
+  // Test 19: Two BYE-resolved source matches feeding the same downstream match cause it to enter intermission
+  test('19. Two BYE-resolved source matches feeding the same downstream match cause it to enter intermission and then READY_CHECK', () => {
+    const teamLookup = {
+      [teamA.id]: { name: teamA.name, logoUrl: teamA.logoUrl },
+      [teamB.id]: { name: teamB.name, logoUrl: teamB.logoUrl }
+    };
+
+    // 2-team tournament in an expanded bracket setup or 2 confirmed teams in bracket
+    const regs: TournamentRegistration[] = [
+      {
+        id: 'reg-bye-1',
+        tournamentId: testTournament.id,
+        teamId: teamA.id,
+        teamName: teamA.name,
+        captainUserId: captainA.id,
+        status: 'REGISTERED',
+        paymentStatus: 'PAID',
+        rosterSnapshot: [],
+        registeredAt: new Date().toISOString(),
+        termsAcceptedAt: new Date().toISOString(),
+        refundPolicyAcceptedAt: new Date().toISOString()
+      },
+      {
+        id: 'reg-bye-2',
+        tournamentId: testTournament.id,
+        teamId: teamB.id,
+        teamName: teamB.name,
+        captainUserId: captainB.id,
+        status: 'REGISTERED',
+        paymentStatus: 'PAID',
+        rosterSnapshot: [],
+        registeredAt: new Date().toISOString(),
+        termsAcceptedAt: new Date().toISOString(),
+        refundPolicyAcceptedAt: new Date().toISOString()
+      }
+    ];
+
+    // Build deterministic matches:
+    // Match 3 (Round 2) fed by Match 1 (Round 1 pos 0, slot A, BYE for Team A) and Match 2 (Round 1 pos 1, slot B, BYE for Team B)
+    const downstream: Match = {
+      id: 'm-downstream-two-byes',
+      tournamentId: testTournament.id,
+      round: 2,
+      matchNumber: 3,
+      bracketPosition: 0,
+      nextMatchId: null,
+      nextMatchSlot: null,
+      teamAId: null,
+      teamBId: null,
+      isBye: false,
+      matchStatus: 'WAITING_FOR_ROUND',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const byeMatch1: Match = {
+      id: 'm-bye-match-1',
+      tournamentId: testTournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 0,
+      nextMatchId: downstream.id,
+      nextMatchSlot: 'A',
+      teamAId: teamA.id,
+      teamBId: null,
+      teamAName: teamA.name,
+      teamBName: null,
+      isBye: true,
+      matchStatus: 'FINAL',
+      winnerTeamId: teamA.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const byeMatch2: Match = {
+      id: 'm-bye-match-2',
+      tournamentId: testTournament.id,
+      round: 1,
+      matchNumber: 2,
+      bracketPosition: 1,
+      nextMatchId: downstream.id,
+      nextMatchSlot: 'B',
+      teamAId: teamB.id,
+      teamBId: null,
+      teamAName: teamB.name,
+      teamBName: null,
+      isBye: true,
+      matchStatus: 'FINAL',
+      winnerTeamId: teamB.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const allMatches = [byeMatch1, byeMatch2, downstream];
+    db.data.matches.push(...allMatches);
+
+    // Advance both BYE winners into downstream
+    advanceMatchWinner(allMatches, byeMatch1.id, teamA.id, teamLookup, 10, 'BYE Round 1');
+    advanceMatchWinner(allMatches, byeMatch2.id, teamB.id, teamLookup, 10, 'BYE Round 1');
+
+    // Assert:
+    // - both downstream team slots are populated
+    assert.strictEqual(downstream.teamAId, teamA.id);
+    assert.strictEqual(downstream.teamBId, teamB.id);
+
+    // - matchStatus is WAITING_FOR_ROUND
+    assert.strictEqual(downstream.matchStatus, 'WAITING_FOR_ROUND');
+
+    // - intermissionDeadlineAt is non-null
+    assert.ok(downstream.intermissionDeadlineAt !== null);
+
+    // - readyDeadlineAt is null
+    assert.strictEqual(downstream.readyDeadlineAt, null);
+
+    // After simulated intermission expiration TimerWorker moves the match to READY_CHECK
+    downstream.intermissionDeadlineAt = new Date(Date.now() - 1000).toISOString();
+    processTimerWorkerTick();
+
+    assert.strictEqual(downstream.matchStatus, 'READY_CHECK');
+    assert.ok(downstream.readyDeadlineAt !== null);
+    assert.strictEqual(downstream.intermissionDeadlineAt, null);
   });
 });

@@ -198,8 +198,33 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     return res.status(400).json({ error: 'A mandatory written reason is required for score overrides.' });
   }
 
+  // 1. teamId must exactly equal match.teamAId or match.teamBId
+  if (!teamId || (teamId !== match.teamAId && teamId !== match.teamBId)) {
+    return res.status(400).json({
+      error: `Invalid teamId '${teamId}'. Must exactly equal match participant Team A (${match.teamAId}) or Team B (${match.teamBId}).`
+    });
+  }
+
+  // 2. runNumber must be exactly 1 or 2
+  const runNum = Number(runNumber);
+  if (runNum !== 1 && runNum !== 2) {
+    return res.status(400).json({
+      error: `Invalid runNumber '${runNumber}'. Must be exactly 1 or 2.`
+    });
+  }
+
+  // 3. The targeted RunSubmission must exist before an override is accepted
   const isSlotA = teamId === match.teamAId;
-  const runNum = Number(runNumber) as 1 | 2;
+  const targetSub = isSlotA
+    ? (runNum === 1 ? match.teamARun1 : match.teamARun2)
+    : (runNum === 1 ? match.teamBRun1 : match.teamBRun2);
+
+  if (!targetSub) {
+    const teamName = isSlotA ? (match.teamAName || 'Team A') : (match.teamBName || 'Team B');
+    return res.status(400).json({
+      error: `Cannot override score: Run ${runNum} for ${teamName} does not exist.`
+    });
+  }
 
   const tournament = db.data.tournaments.find((t) => t.id === match.tournamentId);
   const calculated = calculateRunScore({
@@ -211,10 +236,6 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
   });
 
   const isoNow = new Date().toISOString();
-  const targetSub = isSlotA
-    ? (runNum === 1 ? match.teamARun1 : match.teamARun2)
-    : (runNum === 1 ? match.teamBRun1 : match.teamBRun2);
-
   const oldScoreStr = targetSub ? `${targetSub.finalRunScore} pts` : '0 pts';
   const targetSubBackup = targetSub ? { ...targetSub } : null;
   const prevFinalScoreA = match.finalScoreA;

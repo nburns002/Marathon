@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+marathon_db.json
+marathon_db*.json
