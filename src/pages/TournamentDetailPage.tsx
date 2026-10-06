@@ -44,6 +44,8 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
   // Registration Modal State
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+  const [termsAccepted, setTermsAccepted] = useState(true);
+  const [refundPolicyAccepted, setRefundPolicyAccepted] = useState(true);
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState('');
   const [registerSuccess, setRegisterSuccess] = useState('');
@@ -108,7 +110,11 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ teamId: selectedTeamId })
+        body: JSON.stringify({
+          teamId: selectedTeamId,
+          termsAccepted,
+          refundPolicyAccepted
+        })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -589,9 +595,34 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                 </div>
               )}
 
+              <div className="space-y-2 pt-1 border-t border-[#1c273d]">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={termsAccepted}
+                    onChange={(e) => setTermsAccepted(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-700 text-amber-500 focus:ring-amber-400"
+                  />
+                  <span className="text-[11px] text-slate-300">
+                    I agree to the Official Marathon Cryo Archive Tournament Rules & Terms of Service.
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={refundPolicyAccepted}
+                    onChange={(e) => setRefundPolicyAccepted(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-700 text-amber-500 focus:ring-amber-400"
+                  />
+                  <span className="text-[11px] text-slate-300">
+                    I understand rosters lock upon registration and agree to the No-Refund Policy once brackets generate.
+                  </span>
+                </label>
+              </div>
+
               <button
                 type="submit"
-                disabled={registering || !selectedTeamId}
+                disabled={registering || !selectedTeamId || !termsAccepted || !refundPolicyAccepted}
                 className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-display font-bold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/25 transition-all disabled:opacity-50"
               >
                 {registering ? 'Snapshotting Roster...' : 'Confirm Registration & Snapshot Roster'}

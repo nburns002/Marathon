@@ -1,16 +1,24 @@
-export interface User {
+export interface PublicUser {
   id: string;
-  email: string;
-  passwordHash: string;
   username: string;
   displayName: string;
   bungieId: string;
   avatarUrl: string;
   role: 'PLAYER' | 'CAPTAIN' | 'ADMIN' | 'SUPERADMIN';
+}
+
+export interface AuthUser extends PublicUser {
+  email: string;
   accountStatus: 'ACTIVE' | 'SUSPENDED';
   createdAt: string;
   updatedAt: string;
 }
+
+export interface UserRecord extends AuthUser {
+  passwordHash: string;
+}
+
+export type User = AuthUser;
 
 export interface TeamMember {
   id: string;
@@ -88,12 +96,24 @@ export interface Tournament {
   roundIntermissionMinutes: number; // default 10
   status: TournamentStatus;
   currentRound: number;
+  bannerUrl?: string;
   rulesText?: string;
   createdAt: string;
   updatedAt: string;
   registeredCount?: number;
   championTeamId?: string | null;
   championTeamName?: string | null;
+
+  // Unified model aliases for backwards compatibility
+  name?: string;
+  mapName?: string;
+  entryFeeUsd?: number;
+  prizePoolUsd?: number;
+  currentTeamCount?: number;
+  startsAt?: string;
+  scheduledStartTime?: string;
+  readyCheckMinutes?: number;
+  headerImageUrl?: string;
 }
 
 export interface TournamentRosterMember {
@@ -256,6 +276,8 @@ export interface Match {
   teamBReady?: boolean;
   teamAReadyAt?: string | null;
   teamBReadyAt?: string | null;
+  teamACaptainId?: string | null;
+  teamBCaptainId?: string | null;
   teamARun1?: RunSubmission | null;
   teamBRun1?: RunSubmission | null;
   teamARun2?: RunSubmission | null;
@@ -263,6 +285,48 @@ export interface Match {
   run1Revealed?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SanitizedRunSubmission {
+  id: string;
+  matchId: string;
+  teamId: string;
+  runNumber: 1 | 2;
+  submittedAt: string;
+  locked: boolean;
+  isRevealed: false;
+}
+
+export interface MatchRoomParticipant {
+  id: string;
+  name: string;
+  tag?: string;
+  logoUrl?: string;
+  captainUserId: string;
+}
+
+export interface MatchRoomResponse {
+  match: Match;
+  messages: MatchMessage[];
+  disputes: MatchDispute[];
+  evidence: MatchEvidence[];
+  adminTickets: AdminTicket[];
+  teamA: MatchRoomParticipant | null;
+  teamB: MatchRoomParticipant | null;
+  teamACaptainId: string | null;
+  teamBCaptainId: string | null;
+}
+
+export interface TournamentDetailResponse {
+  tournament: Tournament;
+  bracket: Bracket | null;
+  registrations: TournamentRegistration[];
+  registrationsCount: number;
+}
+
+export interface TeamSummary extends Team {
+  members: TeamMember[];
+  captain?: PublicUser;
 }
 
 export interface Bracket {

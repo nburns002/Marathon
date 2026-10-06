@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 
 type EventCallback = (data: any) => void;
 
@@ -13,40 +13,71 @@ const RealtimeContext = createContext<RealtimeContextType | null>(null);
 export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [connected, setConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<{ type: string; data: any; timestamp: number } | null>(null);
-  const [listeners, setListeners] = useState<Map<string, Set<EventCallback>>>(() => new Map<string, Set<EventCallback>>());
+  
+  // Stable ref for listeners so adding/removing subscribers NEVER recreates the EventSource connection
+  const listenersRef = useRef<Map<string, Set<EventCallback>>>(new Map());
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    let eventSource: EventSource | null = null;
+    let isMounted = true;
 
     const connectSSE = () => {
-      eventSource = new EventSource('/api/events');
+      if (!isMounted) return;
+
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+
+      const eventSource = new EventSource('/api/events');
+      eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        setConnected(true);
+        if (isMounted) setConnected(true);
       };
 
       eventSource.onerror = () => {
+        if (!isMounted) return;
         setConnected(false);
-        if (eventSource) {
-          eventSource.close();
+        eventSource.close();
+        eventSourceRef.current = null;
+
+        // Clear existing reconnect timer if any
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current);
         }
-        // Reconnect after 3 seconds
-        setTimeout(connectSSE, 3000);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (isMounted) connectSSE();
+        }, 3000);
       };
 
       const handleEvent = (type: string, ev: MessageEvent) => {
+        if (!isMounted) return;
         try {
           const data = JSON.parse(ev.data);
           setLastEvent({ type, data, timestamp: Date.now() });
 
-          const callbacks = listeners.get(type);
+          const callbacks = listenersRef.current.get(type);
           if (callbacks) {
-            callbacks.forEach((cb) => cb(data));
+            callbacks.forEach((cb) => {
+              try {
+                cb(data);
+              } catch (cbErr) {
+                console.error(`Error in SSE listener for '${type}':`, cbErr);
+              }
+            });
           }
-          // Also trigger generic wildcard callbacks
-          const wildcard = listeners.get('*');
+
+          // Trigger generic wildcard callbacks
+          const wildcard = listenersRef.current.get('*');
           if (wildcard) {
-            wildcard.forEach((cb) => cb({ type, data }));
+            wildcard.forEach((cb) => {
+              try {
+                cb({ type, data });
+              } catch (cbErr) {
+                console.error("Error in wildcard SSE listener:", cbErr);
+              }
+            });
           }
         } catch (err) {
           console.error('Error handling SSE payload:', err);
@@ -66,47 +97,42 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       ];
 
       eventTypes.forEach((type) => {
-        eventSource?.addEventListener(type, (ev: MessageEvent) => handleEvent(type, ev));
+        eventSource.addEventListener(type, (ev: MessageEvent) => handleEvent(type, ev));
       });
     };
 
     connectSSE();
 
     return () => {
-      if (eventSource) {
-        eventSource.close();
+      isMounted = false;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
     };
-  }, [listeners]);
+  }, []);
 
-  const subscribe = (eventType: string, callback: EventCallback) => {
-    setListeners((prev: Map<string, Set<EventCallback>>) => {
-      const next = new Map<string, Set<EventCallback>>(prev);
-      const existing = next.get(eventType);
-      if (!existing) {
-        const newSet = new Set<EventCallback>();
-        newSet.add(callback);
-        next.set(eventType, newSet);
-      } else {
-        existing.add(callback);
-      }
-      return next;
-    });
+  const subscribe = useCallback((eventType: string, callback: EventCallback) => {
+    let set = listenersRef.current.get(eventType);
+    if (!set) {
+      set = new Set<EventCallback>();
+      listenersRef.current.set(eventType, set);
+    }
+    set.add(callback);
 
     return () => {
-      setListeners((prev: Map<string, Set<EventCallback>>) => {
-        const next = new Map<string, Set<EventCallback>>(prev);
-        const set = next.get(eventType);
-        if (set) {
-          set.delete(callback);
-          if (set.size === 0) {
-            next.delete(eventType);
-          }
+      const currentSet = listenersRef.current.get(eventType);
+      if (currentSet) {
+        currentSet.delete(callback);
+        if (currentSet.size === 0) {
+          listenersRef.current.delete(eventType);
         }
-        return next;
-      });
+      }
     };
-  };
+  }, []);
 
   return (
     <RealtimeContext.Provider value={{ connected, subscribe, lastEvent }}>

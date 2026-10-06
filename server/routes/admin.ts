@@ -55,162 +55,39 @@ router.get('/disputes', requireAuth, requireAdmin, (req, res) => {
   return res.json({ disputes });
 });
 
-// Resolve Dispute
-router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const admin = req.user!;
-  const dispute = db.data.matchDisputes.find((d) => d.id === req.params.id);
-
-  if (!dispute) {
-    return res.status(404).json({ error: 'Dispute not found.' });
-  }
-
-  const { resolution, ruling, newScoreData, reason } = req.body;
-  if (!resolution || !reason) {
-    return res.status(400).json({ error: 'Resolution details and written reason are required.' });
-  }
-
-  const isoNow = new Date().toISOString();
-  dispute.status = 'RESOLVED';
-  dispute.resolution = `${ruling ? `[${ruling}] ` : ''}${resolution}`;
-  dispute.assignedAdminId = admin.id;
-  dispute.assignedAdminName = admin.displayName || admin.username;
-  dispute.updatedAt = isoNow;
-
-  const match = db.data.matches.find((m) => m.id === dispute.matchId);
-
-  // If score adjustment requested
-  if (match && newScoreData) {
-    const isSlotA = newScoreData.teamId === match.teamAId;
-    const runNum = newScoreData.runNumber as 1 | 2;
-
-    const recalculated = calculateRunScore({
-      runnerKills: Number(newScoreData.runnerKills),
-      extractedCredits: Number(newScoreData.extractedCredits),
-      playersExtracted: Number(newScoreData.playersExtracted) as 0 | 1 | 2 | 3,
-      objectiveCompleted: Boolean(newScoreData.objectiveCompleted)
-    });
-
-    const targetSub = isSlotA
-      ? (runNum === 1 ? match.teamARun1 : match.teamARun2)
-      : (runNum === 1 ? match.teamBRun1 : match.teamBRun2);
-
-    const oldScoreStr = targetSub ? `${targetSub.finalRunScore} pts (kills: ${targetSub.runnerKills}, loot: ${targetSub.extractedCredits})` : 'None';
-
-    if (targetSub) {
-      Object.assign(targetSub, {
-        ...recalculated,
-        submittedByName: `${targetSub.submittedByName} (Corrected by Admin)`
-      });
-    }
-
-    match.finalScoreA = Number(((match.teamARun1?.finalRunScore || 0) + (match.teamARun2?.finalRunScore || 0)).toFixed(2));
-    match.finalScoreB = Number(((match.teamBRun1?.finalRunScore || 0) + (match.teamBRun2?.finalRunScore || 0)).toFixed(2));
-
-    const adminAction: AdminAction = {
-      id: `act-${uuidv4().slice(0, 8)}`,
-      adminId: admin.id,
-      adminName: admin.displayName || admin.username,
-      tournamentId: match.tournamentId,
-      matchId: match.id,
-      action: `CORRECTED_SCORE_RUN_${runNum}`,
-      oldValue: oldScoreStr,
-      newValue: `${recalculated.finalRunScore} pts (${recalculated.breakdownString})`,
-      reason: reason.trim(),
-      createdAt: isoNow
-    };
-    db.data.adminActions.push(adminAction);
-  }
-
-  // Unfreeze match and set to RESULT_PENDING with fresh 5m window or FINAL
-  if (match) {
-    match.matchStatus = 'RESULT_PENDING';
-    match.disputeDeadlineAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-    match.adminNotes = `Dispute resolved by Admin ${admin.displayName}: ${resolution}`;
-    match.updatedAt = isoNow;
-
-    db.data.matchMessages.push({
-      id: uuidv4(),
-      matchId: match.id,
-      userId: admin.id,
-      userName: admin.displayName || admin.username,
-      userRole: 'ADMIN',
-      type: 'ADMIN',
-      message: `ADMIN RULING ISSUED by ${admin.displayName}:\n"${resolution}"\nReason: ${reason}\nMatch unfreezes into 5-minute confirmation period.`,
-      createdAt: isoNow
-    });
-  }
-
-  db.data.auditLogs.push({
-    id: uuidv4(),
-    actorType: 'ADMIN',
-    actorId: admin.id,
-    actorName: admin.username,
-    action: 'DISPUTE_RESOLVED',
-    entityType: 'MATCH',
-    entityId: dispute.matchId,
-    metadata: { disputeId: dispute.id, resolution, reason },
-    timestamp: isoNow
-  });
-
-  db.save();
-  broadcastEvent('DISPUTE_RESOLVED', { disputeId: dispute.id, matchId: dispute.matchId });
-
-  return res.json({ success: true, dispute, message: 'Dispute resolved successfully.' });
-});
-
-// Admin Assistance Ticket Queue
-router.get('/tickets', requireAuth, requireAdmin, (req, res) => {
-  return res.json({ tickets: db.data.adminTickets });
-});
-
-// Update Ticket Status
-router.post('/tickets/:id/update-status', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const admin = req.user!;
-  const ticket = db.data.adminTickets.find((t) => t.id === req.params.id);
-
-  if (!ticket) {
-    return res.status(404).json({ error: 'Ticket not found.' });
-  }
-
-  const { status, resolutionNotes } = req.body;
-  ticket.status = status;
-  ticket.assignedAdminId = admin.id;
-  ticket.assignedAdminName = admin.displayName || admin.username;
-  if (resolutionNotes) ticket.resolutionNotes = resolutionNotes.trim();
-  ticket.updatedAt = new Date().toISOString();
-
-  db.save();
-  return res.json({ success: true, ticket });
-});
-
-// Score Override Control
-router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
-  const admin = req.user!;
-  const match = db.data.matches.find((m) => m.id === req.params.id);
-
-  if (!match) {
-    return res.status(404).json({ error: 'Match not found.' });
-  }
-
-  const { teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = req.body;
+// Authoritative Shared Admin Score Correction Function
+function applyAuthoritativeAdminScoreCorrection(params: {
+  match: any;
+  admin: any;
+  teamId: string;
+  runNumber: number;
+  runnerKills: number;
+  extractedCredits: number;
+  playersExtracted: number;
+  objectiveCompleted: boolean;
+  reason: string;
+}): { success: boolean; error?: string; oldScoreStr?: string; newScoreStr?: string } {
+  const { match, admin, teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = params;
 
   if (!reason || !reason.trim()) {
-    return res.status(400).json({ error: 'A mandatory written reason is required for score overrides.' });
+    return { success: false, error: 'A mandatory written reason is required for score overrides.' };
   }
 
   // 1. teamId must exactly equal match.teamAId or match.teamBId
   if (!teamId || (teamId !== match.teamAId && teamId !== match.teamBId)) {
-    return res.status(400).json({
+    return {
+      success: false,
       error: `Invalid teamId '${teamId}'. Must exactly equal match participant Team A (${match.teamAId}) or Team B (${match.teamBId}).`
-    });
+    };
   }
 
   // 2. runNumber must be exactly 1 or 2
   const runNum = Number(runNumber);
   if (runNum !== 1 && runNum !== 2) {
-    return res.status(400).json({
+    return {
+      success: false,
       error: `Invalid runNumber '${runNumber}'. Must be exactly 1 or 2.`
-    });
+    };
   }
 
   // 3. The targeted RunSubmission must exist before an override is accepted
@@ -221,32 +98,45 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
 
   if (!targetSub) {
     const teamName = isSlotA ? (match.teamAName || 'Team A') : (match.teamBName || 'Team B');
-    return res.status(400).json({
+    return {
+      success: false,
       error: `Cannot override score: Run ${runNum} for ${teamName} does not exist.`
-    });
+    };
+  }
+
+  const killsNum = Math.floor(Number(runnerKills));
+  const lootNum = Number(extractedCredits);
+  const survivorsNum = Math.floor(Number(playersExtracted));
+
+  if (isNaN(killsNum) || killsNum < 0) {
+    return { success: false, error: 'Runner kills must be a non-negative integer.' };
+  }
+  if (isNaN(lootNum) || lootNum < 0) {
+    return { success: false, error: 'Extracted credits must be a non-negative number.' };
+  }
+  if (![0, 1, 2, 3].includes(survivorsNum)) {
+    return { success: false, error: 'Players extracted must be an integer between 0 and 3.' };
   }
 
   const tournament = db.data.tournaments.find((t) => t.id === match.tournamentId);
   const calculated = calculateRunScore({
-    runnerKills: Number(runnerKills),
-    extractedCredits: Number(extractedCredits),
-    playersExtracted: Number(playersExtracted) as 0 | 1 | 2 | 3,
+    runnerKills: killsNum,
+    extractedCredits: lootNum,
+    playersExtracted: survivorsNum as 0 | 1 | 2 | 3,
     objectiveCompleted: Boolean(objectiveCompleted),
     objectivePointsValue: tournament?.featuredObjectivePoints || 5
   });
 
   const isoNow = new Date().toISOString();
   const oldScoreStr = targetSub ? `${targetSub.finalRunScore} pts` : '0 pts';
-  const targetSubBackup = targetSub ? { ...targetSub } : null;
+  const targetSubBackup = { ...targetSub };
   const prevFinalScoreA = match.finalScoreA;
   const prevFinalScoreB = match.finalScoreB;
 
-  if (targetSub) {
-    Object.assign(targetSub, {
-      ...calculated,
-      submittedByName: `${targetSub.submittedByName} (Overridden by ${admin.displayName || admin.username})`
-    });
-  }
+  Object.assign(targetSub, {
+    ...calculated,
+    submittedByName: `${targetSub.submittedByName} (Corrected by Admin ${admin.displayName || admin.username})`
+  });
 
   const newScoreA = Number(((match.teamARun1?.finalRunScore || 0) + (match.teamARun2?.finalRunScore || 0)).toFixed(2));
   const newScoreB = Number(((match.teamBRun1?.finalRunScore || 0) + (match.teamBRun2?.finalRunScore || 0)).toFixed(2));
@@ -284,17 +174,15 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
         newWinnerId,
         teamLookup,
         tournament?.roundIntermissionMinutes || 10,
-        `Score override: ${reason}`
+        `Score correction: ${reason}`
       );
 
       if (!reconcileRes.success) {
         // Rollback score change to prevent data inconsistency
-        if (targetSub && targetSubBackup) {
-          Object.assign(targetSub, targetSubBackup);
-        }
+        Object.assign(targetSub, targetSubBackup);
         match.finalScoreA = prevFinalScoreA;
         match.finalScoreB = prevFinalScoreB;
-        return res.status(400).json({ error: reconcileRes.error });
+        return { success: false, error: reconcileRes.error };
       }
 
       if (reconcileRes.auditEvent) {
@@ -350,7 +238,7 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     adminName: admin.displayName || admin.username,
     tournamentId: match.tournamentId,
     matchId: match.id,
-    action: `ADMIN_SCORE_OVERRIDE_RUN_${runNum}`,
+    action: `ADMIN_SCORE_CORRECTION_RUN_${runNum}`,
     oldValue: oldScoreStr,
     newValue: `${calculated.finalRunScore} pts (${calculated.breakdownString})`,
     reason: reason.trim(),
@@ -365,7 +253,7 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     userName: admin.displayName || admin.username,
     userRole: 'ADMIN',
     type: 'ADMIN',
-    message: `ADMIN SCORE OVERRIDE: ${targetTeamName} Run ${runNum} updated to ${calculated.finalRunScore} pts (${calculated.breakdownString}).\nReason: "${reason}"`,
+    message: `ADMIN SCORE CORRECTION: ${targetTeamName} Run ${runNum} updated to ${calculated.finalRunScore} pts (${calculated.breakdownString}).\nReason: "${reason}"`,
     createdAt: isoNow
   });
 
@@ -377,9 +265,154 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     action: 'ADMIN_SCORE_OVERRIDE',
     entityType: 'MATCH',
     entityId: match.id,
-    metadata: { teamId, runNumber, calculated, reason },
+    metadata: { teamId, runNumber: runNum, calculated, reason },
     timestamp: isoNow
   });
+
+  return {
+    success: true,
+    oldScoreStr,
+    newScoreStr: `${calculated.finalRunScore} pts (${calculated.breakdownString})`
+  };
+}
+
+// Resolve Dispute
+router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const admin = req.user!;
+  const dispute = db.data.matchDisputes.find((d) => d.id === req.params.id);
+
+  if (!dispute) {
+    return res.status(404).json({ error: 'Dispute not found.' });
+  }
+
+  // Reject resolving an already resolved dispute
+  if (dispute.status === 'RESOLVED') {
+    return res.status(400).json({ error: 'Dispute has already been resolved.' });
+  }
+
+  const { resolution, ruling, newScoreData, reason } = req.body;
+  if (!resolution || !reason) {
+    return res.status(400).json({ error: 'Resolution details and written reason are required.' });
+  }
+
+  const match = db.data.matches.find((m) => m.id === dispute.matchId);
+  if (!match) {
+    return res.status(404).json({ error: 'Associated match not found.' });
+  }
+
+  // If score adjustment is requested, validate and execute it BEFORE resolving the dispute
+  if (newScoreData) {
+    const correctionRes = applyAuthoritativeAdminScoreCorrection({
+      match,
+      admin,
+      teamId: newScoreData.teamId,
+      runNumber: Number(newScoreData.runNumber),
+      runnerKills: Number(newScoreData.runnerKills),
+      extractedCredits: Number(newScoreData.extractedCredits),
+      playersExtracted: Number(newScoreData.playersExtracted),
+      objectiveCompleted: Boolean(newScoreData.objectiveCompleted),
+      reason
+    });
+
+    if (!correctionRes.success) {
+      return res.status(400).json({ error: correctionRes.error });
+    }
+  }
+
+  const isoNow = new Date().toISOString();
+  dispute.status = 'RESOLVED';
+  dispute.resolution = `${ruling ? `[${ruling}] ` : ''}${resolution}`;
+  dispute.assignedAdminId = admin.id;
+  dispute.assignedAdminName = admin.displayName || admin.username;
+  dispute.updatedAt = isoNow;
+
+  // Unfreeze match and set to RESULT_PENDING with fresh 5m window
+  match.matchStatus = 'RESULT_PENDING';
+  match.disputeDeadlineAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  match.adminNotes = `Dispute resolved by Admin ${admin.displayName}: ${resolution}`;
+  match.updatedAt = isoNow;
+
+  db.data.matchMessages.push({
+    id: uuidv4(),
+    matchId: match.id,
+    userId: admin.id,
+    userName: admin.displayName || admin.username,
+    userRole: 'ADMIN',
+    type: 'ADMIN',
+    message: `ADMIN RULING ISSUED by ${admin.displayName}:\n"${resolution}"\nReason: ${reason}\nMatch unfreezes into 5-minute confirmation period.`,
+    createdAt: isoNow
+  });
+
+  db.data.auditLogs.push({
+    id: uuidv4(),
+    actorType: 'ADMIN',
+    actorId: admin.id,
+    actorName: admin.username,
+    action: 'DISPUTE_RESOLVED',
+    entityType: 'MATCH',
+    entityId: dispute.matchId,
+    metadata: { disputeId: dispute.id, resolution, reason },
+    timestamp: isoNow
+  });
+
+  db.save();
+  broadcastEvent('DISPUTE_RESOLVED', { disputeId: dispute.id, matchId: dispute.matchId });
+  broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
+
+  return res.json({ success: true, dispute, message: 'Dispute resolved successfully.' });
+});
+
+// Admin Assistance Ticket Queue
+router.get('/tickets', requireAuth, requireAdmin, (req, res) => {
+  return res.json({ tickets: db.data.adminTickets });
+});
+
+// Update Ticket Status
+router.post('/tickets/:id/update-status', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const admin = req.user!;
+  const ticket = db.data.adminTickets.find((t) => t.id === req.params.id);
+
+  if (!ticket) {
+    return res.status(404).json({ error: 'Ticket not found.' });
+  }
+
+  const { status, resolutionNotes } = req.body;
+  ticket.status = status;
+  ticket.assignedAdminId = admin.id;
+  ticket.assignedAdminName = admin.displayName || admin.username;
+  if (resolutionNotes) ticket.resolutionNotes = resolutionNotes.trim();
+  ticket.updatedAt = new Date().toISOString();
+
+  db.save();
+  return res.json({ success: true, ticket });
+});
+
+// Score Override Control
+router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  const admin = req.user!;
+  const match = db.data.matches.find((m) => m.id === req.params.id);
+
+  if (!match) {
+    return res.status(404).json({ error: 'Match not found.' });
+  }
+
+  const { teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = req.body;
+
+  const result = applyAuthoritativeAdminScoreCorrection({
+    match,
+    admin,
+    teamId,
+    runNumber: Number(runNumber),
+    runnerKills: Number(runnerKills),
+    extractedCredits: Number(extractedCredits),
+    playersExtracted: Number(playersExtracted),
+    objectiveCompleted: Boolean(objectiveCompleted),
+    reason
+  });
+
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
 
   db.save();
   broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
@@ -398,9 +431,24 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
 
   const { action, reason } = req.body;
   const isoNow = new Date().toISOString();
+  const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+
+  // Validate action enum
+  const validActions = ['EXTEND_15_MIN', 'RESTART_READY_CHECK', 'REVERSE_FORFEIT'];
+  if (!action || !validActions.includes(action)) {
+    return res.status(400).json({ error: `Unknown timer control action '${action}'. Valid actions: ${validActions.join(', ')}.` });
+  }
 
   if (action === 'EXTEND_15_MIN') {
-    const currentDeadlineMs = match.matchDeadlineAt ? new Date(match.matchDeadlineAt).getTime() : Date.now();
+    // State-gate: only when a match clock exists and match is active
+    const activeScoringStates = ['ACTIVE', 'RUN_1_PARTIAL', 'RUN_1_COMPLETE'];
+    if (!activeScoringStates.includes(match.matchStatus) || !match.matchDeadlineAt) {
+      return res.status(400).json({
+        error: `Cannot extend clock: match is in '${match.matchStatus}' state and does not have an active playing clock.`
+      });
+    }
+
+    const currentDeadlineMs = new Date(match.matchDeadlineAt).getTime();
     match.matchDeadlineAt = new Date(currentDeadlineMs + 15 * 60 * 1000).toISOString();
 
     db.data.matchMessages.push({
@@ -414,10 +462,19 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
       createdAt: isoNow
     });
   } else if (action === 'RESTART_READY_CHECK') {
+    // State-gate: only when appropriate (pre-match review, ready check, or no-show review)
+    const permittedReadyStates = ['READY_CHECK', 'WAITING_FOR_ROUND', 'DOUBLE_FORFEIT', 'ADMIN_REVIEW'];
+    if (!permittedReadyStates.includes(match.matchStatus)) {
+      return res.status(400).json({
+        error: `Cannot restart Ready Check: match is currently in '${match.matchStatus}' state.`
+      });
+    }
+
+    const readyMinutes = tourn?.readyWindowMinutes || 10;
     match.matchStatus = 'READY_CHECK';
     match.teamAReady = false;
     match.teamBReady = false;
-    match.readyDeadlineAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    match.readyDeadlineAt = new Date(Date.now() + readyMinutes * 60 * 1000).toISOString();
 
     db.data.matchMessages.push({
       id: uuidv4(),
@@ -426,7 +483,7 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
       userName: admin.displayName || admin.username,
       userRole: 'ADMIN',
       type: 'ADMIN',
-      message: `ADMIN ACTION: Ready Check reset. 10 minutes granted for both captains to check in.`,
+      message: `ADMIN ACTION: Ready Check reset. ${readyMinutes} minutes granted for both captains to check in.`,
       createdAt: isoNow
     });
   } else if (action === 'REVERSE_FORFEIT') {
@@ -439,8 +496,6 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
     db.data.teams.forEach((t) => {
       teamLookup[t.id] = { name: t.name, logoUrl: t.logoUrl };
     });
-
-    const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
 
     // Safely reconcile downstream bracket before reopening match
     const reconcileRes = reconcileMatchAdvancement(
@@ -471,11 +526,12 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
       });
     }
 
+    const matchMinutes = tourn?.matchWindowMinutes || 75;
     match.matchStatus = 'ACTIVE';
     match.winnerTeamId = null;
     match.loserTeamId = null;
     match.forfeitReason = null;
-    match.matchDeadlineAt = new Date(Date.now() + (tourn?.matchWindowMinutes || 75) * 60 * 1000).toISOString();
+    match.matchDeadlineAt = new Date(Date.now() + matchMinutes * 60 * 1000).toISOString();
 
     if (tourn) {
       if (tourn.championTeamId === previousWinnerTeamId) {

@@ -77,13 +77,32 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   const [overrideReason, setOverrideReason] = useState<string>('');
   const [overrideSubmitting, setOverrideSubmitting] = useState<boolean>(false);
 
+  // In-app notifications & Declare Winner Modal State
+  const [roomNotification, setRoomNotification] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
+  const [declareWinnerModal, setDeclareWinnerModal] = useState<{
+    show: boolean;
+    teamId: string;
+    teamName: string;
+    reason: string;
+    submitting: boolean;
+  } | null>(null);
+
+  const showBanner = (message: string, type: 'error' | 'success' = 'error') => {
+    setRoomNotification({ type, message });
+    setTimeout(() => {
+      setRoomNotification((prev) => (prev?.message === message ? null : prev));
+    }, 6000);
+  };
+
   // Synchronized Timers State
   const [timeLeftStr, setTimeLeftStr] = useState<string>('');
   const [disputeTimeLeftStr, setDisputeTimeLeftStr] = useState<string>('');
 
   const fetchMatchData = async (targetId: string) => {
     try {
-      const res = await fetch(`/api/matches/${targetId}`);
+      const res = await fetch(`/api/matches/${targetId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         const data = await res.json();
         setMatch(data.match);
@@ -99,7 +118,9 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
 
   const fetchAllMatches = async () => {
     try {
-      const res = await fetch('/api/matches');
+      const res = await fetch('/api/matches', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         const data = await res.json();
         setAllMatches(data.matches || []);
@@ -206,9 +227,11 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   }
 
   // Permissions & User Context
-  const isTeamA = userTeams.some((t) => t.id === match.teamAId);
-  const isTeamB = userTeams.some((t) => t.id === match.teamBId);
-  const isCaptain = (isTeamA && match.teamACaptainId === user?.id) || (isTeamB && match.teamBCaptainId === user?.id);
+  const isCaptainA = match.teamACaptainId === user?.id || userTeams.some((t) => t.id === match.teamAId && t.captainUserId === user?.id);
+  const isCaptainB = match.teamBCaptainId === user?.id || userTeams.some((t) => t.id === match.teamBId && t.captainUserId === user?.id);
+  const isTeamA = isCaptainA || userTeams.some((t) => t.id === match.teamAId);
+  const isTeamB = isCaptainB || userTeams.some((t) => t.id === match.teamBId);
+  const isCaptain = isCaptainA || isCaptainB;
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPERADMIN';
   const userTeamId = isTeamA ? match.teamAId : isTeamB ? match.teamBId : null;
 
@@ -224,13 +247,20 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   const handleReadyCheck = async () => {
     if (!token) return;
     try {
-      await fetch(`/api/matches/${match.id}/ready`, {
+      const res = await fetch(`/api/matches/${match.id}/ready`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` }
       });
-      fetchMatchData(match.id);
-    } catch (err) {
+      if (!res.ok) {
+        const data = await res.json();
+        showBanner(data.error || 'Failed to check in for Ready Check.');
+      } else {
+        showBanner('Ready Check successful!', 'success');
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
       console.error('Ready check error:', err);
+      showBanner(err.message || 'Network error during Ready Check.');
     }
   };
 
@@ -244,7 +274,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     setChatInput('');
 
     try {
-      await fetch(`/api/matches/${match.id}/messages`, {
+      const res = await fetch(`/api/matches/${match.id}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -252,9 +282,15 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
         },
         body: JSON.stringify({ message: content })
       });
-      fetchMatchData(match.id);
-    } catch (err) {
+      if (!res.ok) {
+        const data = await res.json();
+        showBanner(data.error || 'Failed to send message.');
+      } else {
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
       console.error('Send message error:', err);
+      showBanner(err.message || 'Network error sending chat.');
     } finally {
       setChatSending(false);
     }
@@ -270,16 +306,26 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     evidenceUrl?: string;
   }) => {
     if (!token) return;
-    const res = await fetch(`/api/matches/${match.id}/score`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify(scoreData)
-    });
-    if (res.ok) {
-      fetchMatchData(match.id);
+    try {
+      const res = await fetch(`/api/matches/${match.id}/score`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(scoreData)
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        showBanner(data.error || 'Failed to submit score.');
+      } else {
+        setShowScoreModal(false);
+        showBanner(`Run ${scoreData.runNumber} score submitted successfully!`, 'success');
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
+      console.error('Score submission error:', err);
+      showBanner(err.message || 'Network error submitting score.');
     }
   };
 
@@ -289,20 +335,27 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     if (!disputeReason.trim() || !token) return;
     setDisputeSubmitting(true);
     try {
-      await fetch(`/api/matches/${match.id}/dispute`, {
+      const res = await fetch(`/api/matches/${match.id}/dispute`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ reason: disputeReason, evidenceUrl: disputeEvidence })
+        body: JSON.stringify({ reason: disputeReason, description: disputeReason, evidenceUrl: disputeEvidence })
       });
-      setShowDisputeModal(false);
-      setDisputeReason('');
-      setDisputeEvidence('');
-      fetchMatchData(match.id);
-    } catch (err) {
+      if (!res.ok) {
+        const data = await res.json();
+        showBanner(data.error || 'Failed to submit dispute.');
+      } else {
+        setShowDisputeModal(false);
+        setDisputeReason('');
+        setDisputeEvidence('');
+        showBanner('Dispute flagged. Match frozen for Referee review.', 'success');
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
       console.error('Dispute submission error:', err);
+      showBanner(err.message || 'Network error submitting dispute.');
     } finally {
       setDisputeSubmitting(false);
     }
@@ -314,7 +367,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     if (!ticketDescription.trim() || !token) return;
     setTicketSubmitting(true);
     try {
-      await fetch(`/api/matches/${match.id}/request-admin`, {
+      const res = await fetch(`/api/matches/${match.id}/request-admin`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -322,11 +375,18 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
         },
         body: JSON.stringify({ category: ticketCategory, description: ticketDescription })
       });
-      setShowAdminTicketModal(false);
-      setTicketDescription('');
-      fetchMatchData(match.id);
-    } catch (err) {
+      if (!res.ok) {
+        const data = await res.json();
+        showBanner(data.error || 'Failed to request referee.');
+      } else {
+        setShowAdminTicketModal(false);
+        setTicketDescription('');
+        showBanner('Referee ticket dispatched.', 'success');
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
       console.error('Ticket submission error:', err);
+      showBanner(err.message || 'Network error submitting ticket.');
     } finally {
       setTicketSubmitting(false);
     }
@@ -335,7 +395,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   // Admin Controls
   const handleAdminTimerControl = async (action: 'EXTEND_15_MIN' | 'RESTART_READY_CHECK' | 'REVERSE_FORFEIT') => {
     if (!token) return;
-    await fetch(`/api/admin/matches/${match.id}/control-timer`, {
+    const res = await fetch(`/api/admin/matches/${match.id}/control-timer`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -343,7 +403,13 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
       },
       body: JSON.stringify({ action, reason: 'Administrative command' })
     });
-    fetchMatchData(match.id);
+    const data = await res.json();
+    if (!res.ok) {
+      showBanner(data.error || 'Admin timer control failed.');
+    } else {
+      showBanner('Timer control executed successfully.', 'success');
+      fetchMatchData(match.id);
+    }
   };
 
   const handleAdminScoreOverride = async (e: React.FormEvent) => {
@@ -351,7 +417,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     if (!token || !overrideReason.trim()) return;
     setOverrideSubmitting(true);
     try {
-      await fetch(`/api/admin/matches/${match.id}/override-score`, {
+      const res = await fetch(`/api/admin/matches/${match.id}/override-score`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -367,32 +433,88 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
           reason: overrideReason
         })
       });
-      setShowAdminOverrideModal(false);
-      fetchMatchData(match.id);
-    } catch (err) {
+      const data = await res.json();
+      if (!res.ok) {
+        showBanner(data.error || 'Score override failed.');
+      } else {
+        setShowAdminOverrideModal(false);
+        showBanner('Score override applied and audited.', 'success');
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
       console.error('Override error:', err);
+      showBanner(err.message || 'Network error during override.');
     } finally {
       setOverrideSubmitting(false);
     }
   };
 
-  const handleAdminDeclareWinner = async (winnerTeamId: string) => {
-    const reason = window.prompt('Enter mandatory written reason for manual winner declaration:');
-    if (!reason || !reason.trim() || !token) return;
-
-    await fetch(`/api/admin/matches/${match.id}/override-winner`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
-      },
-      body: JSON.stringify({ winnerTeamId, reason })
+  const handleOpenDeclareWinner = (winnerTeamId: string) => {
+    const teamName = winnerTeamId === match.teamAId ? (match.teamAName || 'Team A') : (match.teamBName || 'Team B');
+    setDeclareWinnerModal({
+      show: true,
+      teamId: winnerTeamId,
+      teamName,
+      reason: '',
+      submitting: false
     });
-    fetchMatchData(match.id);
+  };
+
+  const handleConfirmDeclareWinner = async () => {
+    if (!declareWinnerModal || !declareWinnerModal.reason.trim() || !token) return;
+    setDeclareWinnerModal((prev) => (prev ? { ...prev, submitting: true } : null));
+    try {
+      const res = await fetch(`/api/admin/matches/${match.id}/override-winner`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ winnerTeamId: declareWinnerModal.teamId, reason: declareWinnerModal.reason.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showBanner(data.error || 'Failed to declare winner.');
+      } else {
+        showBanner(`Winner declared: ${declareWinnerModal.teamName}`, 'success');
+        setDeclareWinnerModal(null);
+        fetchMatchData(match.id);
+      }
+    } catch (err: any) {
+      showBanner(err.message || 'Network error declaring winner.');
+    } finally {
+      setDeclareWinnerModal((prev) => (prev ? { ...prev, submitting: false } : null));
+    }
   };
 
   return (
     <div className="space-y-6">
+      {/* Dynamic Status / Alert Banner */}
+      {roomNotification && (
+        <div
+          className={`p-3.5 rounded-xl border flex items-center justify-between transition-all ${
+            roomNotification.type === 'error'
+              ? 'bg-red-500/15 border-red-500/40 text-red-300'
+              : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            {roomNotification.type === 'error' ? (
+              <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+            )}
+            <span>{roomNotification.message}</span>
+          </div>
+          <button
+            onClick={() => setRoomNotification(null)}
+            className="text-xs font-mono opacity-70 hover:opacity-100 px-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Match Bar & Quick Selector */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#1f2b42]">
         <div className="flex items-center gap-3">
@@ -873,13 +995,13 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
               <div className="pt-2 border-t border-[#291e3b] flex items-center gap-2">
                 <span className="text-xs text-slate-400">Declare Authoritative Winner:</span>
                 <button
-                  onClick={() => match.teamAId && handleAdminDeclareWinner(match.teamAId)}
+                  onClick={() => match.teamAId && handleOpenDeclareWinner(match.teamAId)}
                   className="px-2.5 py-1 rounded bg-[#20162e] border border-red-500/40 text-xs text-amber-300 font-bold hover:bg-amber-500/20"
                 >
                   Adv. {match.teamAName}
                 </button>
                 <button
-                  onClick={() => match.teamBId && handleAdminDeclareWinner(match.teamBId)}
+                  onClick={() => match.teamBId && handleOpenDeclareWinner(match.teamBId)}
                   className="px-2.5 py-1 rounded bg-[#20162e] border border-red-500/40 text-xs text-amber-300 font-bold hover:bg-amber-500/20"
                 >
                   Adv. {match.teamBName}
@@ -1203,6 +1325,71 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
               >
                 {overrideSubmitting ? 'Overriding & Logging...' : 'Commit Authoritative Override'}
               </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Declare Winner Modal */}
+      {declareWinnerModal?.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="relative w-full max-w-md bg-[#0d1320] border border-red-500/40 rounded-2xl shadow-2xl p-6">
+            <div className="flex items-center justify-between pb-4 border-b border-[#1c273d] mb-4">
+              <div>
+                <h3 className="font-display font-bold text-base text-white uppercase tracking-wider">
+                  Declare Match Winner
+                </h3>
+                <p className="text-xs text-amber-400 mt-0.5">
+                  Advance: {declareWinnerModal.teamName}
+                </p>
+              </div>
+              <button
+                onClick={() => setDeclareWinnerModal(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleConfirmDeclareWinner();
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Mandatory Written Reason for Audit Log <span className="text-red-400">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={declareWinnerModal.reason}
+                  onChange={(e) =>
+                    setDeclareWinnerModal((prev) => (prev ? { ...prev, reason: e.target.value } : null))
+                  }
+                  placeholder="Official referee ruling explaining manual winner declaration..."
+                  className="w-full px-3 py-2 rounded-lg bg-[#141d2e] border border-[#23314c] text-xs text-white focus:outline-none focus:border-red-400"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1c273d]">
+                <button
+                  type="button"
+                  onClick={() => setDeclareWinnerModal(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={declareWinnerModal.submitting || !declareWinnerModal.reason.trim()}
+                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-display font-bold text-xs uppercase tracking-wider transition-all disabled:opacity-50"
+                >
+                  {declareWinnerModal.submitting ? 'Declaring...' : 'Confirm Winner Declaration'}
+                </button>
+              </div>
             </form>
           </div>
         </div>

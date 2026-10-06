@@ -3,7 +3,18 @@ import jwt from 'jsonwebtoken';
 import { db } from './db';
 import { User } from '../src/types';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'marathon_tournament_platform_jwt_secret_2026';
+export function getJwtSecret(): string {
+  if (process.env.NODE_ENV === 'production') {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret.length < 32 || secret === 'marathon_tournament_platform_jwt_secret_2026') {
+      throw new Error('FATAL: Production mode requires a secure JWT_SECRET environment variable with at least 32 characters.');
+    }
+    return secret;
+  }
+  return process.env.JWT_SECRET || 'marathon_tournament_platform_jwt_secret_2026';
+}
+
+const JWT_SECRET = getJwtSecret();
 
 export interface AuthenticatedRequest extends Request {
   user?: User;

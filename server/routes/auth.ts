@@ -3,9 +3,22 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, generateToken, requireAuth } from '../middleware';
-import { User } from '../../src/types';
+import { User, PublicUser, TeamSummary } from '../../src/types';
+import { validateBungieIdFormat } from '../registrationService';
 
 const router = Router();
+
+function toPublicUser(u?: User | null): PublicUser | undefined {
+  if (!u) return undefined;
+  return {
+    id: u.id,
+    username: u.username,
+    displayName: u.displayName,
+    bungieId: u.bungieId,
+    avatarUrl: u.avatarUrl,
+    role: u.role
+  };
+}
 
 // Register new user
 router.post('/register', (req, res) => {
@@ -15,12 +28,19 @@ router.post('/register', (req, res) => {
     return res.status(400).json({ error: 'Email, username, Bungie ID, and password are required.' });
   }
 
-  const existingEmail = db.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+  const cleanBungieId = bungieId.trim();
+  if (!validateBungieIdFormat(cleanBungieId)) {
+    return res.status(400).json({
+      error: `Invalid Bungie ID format '${cleanBungieId}'. Format must be DisplayName#1234 (2-24 characters followed by 4-5 digits).`
+    });
+  }
+
+  const existingEmail = db.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase().trim());
   if (existingEmail) {
     return res.status(400).json({ error: 'An account with this email already exists.' });
   }
 
-  const existingUsername = db.data.users.find((u) => u.username.toLowerCase() === username.toLowerCase());
+  const existingUsername = db.data.users.find((u) => u.username.toLowerCase() === username.toLowerCase().trim());
   if (existingUsername) {
     return res.status(400).json({ error: 'Username is already taken.' });
   }
@@ -34,7 +54,7 @@ router.post('/register', (req, res) => {
     passwordHash,
     username: username.trim(),
     displayName: displayName?.trim() || username.trim(),
-    bungieId: bungieId.trim(),
+    bungieId: cleanBungieId,
     avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(username.trim())}`,
     role: 'PLAYER',
     accountStatus: 'ACTIVE',
@@ -70,7 +90,7 @@ router.post('/login', (req, res) => {
   }
 
   const user = db.data.users.find(
-    (u) => u.email.toLowerCase() === login.toLowerCase() || u.username.toLowerCase() === login.toLowerCase()
+    (u) => u.email.toLowerCase() === login.toLowerCase().trim() || u.username.toLowerCase() === login.toLowerCase().trim()
   );
 
   if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
@@ -86,11 +106,33 @@ router.post('/login', (req, res) => {
   return res.json({ token, user: safeUser });
 });
 
-// Get Current User Profile + Team
+// Get Current User Profile + Enriched Teams
 router.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   const userMemberships = db.data.teamMembers.filter((tm) => tm.userId === user.id && tm.membershipStatus === 'ACTIVE');
-  const userTeams = db.data.teams.filter((t) => userMemberships.some((tm) => tm.teamId === t.id));
+  const userTeamsRaw = db.data.teams.filter((t) => userMemberships.some((tm) => tm.teamId === t.id));
+
+  // Enrich user teams with active members and captain details
+  const enrichedTeams: TeamSummary[] = userTeamsRaw.map((team) => {
+    const members = db.data.teamMembers
+      .filter((tm) => tm.teamId === team.id && tm.membershipStatus === 'ACTIVE')
+      .map((tm) => {
+        const u = db.data.users.find((usr) => usr.id === tm.userId);
+        return {
+          ...tm,
+          user: toPublicUser(u)
+        };
+      });
+
+    const captain = db.data.users.find((u) => u.id === team.captainUserId);
+
+    return {
+      ...team,
+      captain: toPublicUser(captain),
+      members
+    };
+  });
+
   const invitations = db.data.teamInvitations.filter((inv) => inv.invitedUserId === user.id && inv.status === 'PENDING');
   const userNotifications = db.data.notifications.filter((n) => n.userId === user.id).slice(-20);
 
@@ -98,8 +140,8 @@ router.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
 
   return res.json({
     user: safeUser,
-    teams: userTeams,
-    primaryTeam: userTeams[0] || null,
+    teams: enrichedTeams,
+    primaryTeam: enrichedTeams[0] || null,
     invitations,
     notifications: userNotifications
   });
@@ -113,9 +155,14 @@ router.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) =
   if (displayName) user.displayName = displayName.trim();
   if (avatarUrl) user.avatarUrl = avatarUrl.trim();
 
-  // Roster Lock notice on Bungie ID edit
   if (bungieId && bungieId.trim() !== user.bungieId) {
-    user.bungieId = bungieId.trim();
+    const cleanBungie = bungieId.trim();
+    if (!validateBungieIdFormat(cleanBungie)) {
+      return res.status(400).json({
+        error: `Invalid Bungie ID format '${cleanBungie}'. Format must be DisplayName#1234.`
+      });
+    }
+    user.bungieId = cleanBungie;
 
     db.data.auditLogs.push({
       id: uuidv4(),
@@ -140,8 +187,12 @@ router.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) =
   });
 });
 
-// Quick persona switcher for live scenario verification
+// Demo persona switcher (Disabled in production mode)
 router.post('/switch-demo-user', (req, res) => {
+  if (process.env.NODE_ENV === 'production' || process.env.DEMO_MODE === 'false') {
+    return res.status(403).json({ error: 'Demo user impersonation is disabled in production mode.' });
+  }
+
   const { userId } = req.body;
   const user = db.data.users.find((u) => u.id === userId);
   if (!user) {

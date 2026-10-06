@@ -63,9 +63,61 @@ class DatabaseStore {
         console.error('[DB] Failed to parse database file, reseeding...', err);
       }
     }
+
+    // In production without explicit demo mode, initialize empty database (never seed demo accounts)
+    if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE !== 'true') {
+      const emptyDb = this.createEmptyDatabase();
+      this.saveImmediate(emptyDb);
+      return emptyDb;
+    }
+
     const seeded = this.createSeedData();
     this.saveImmediate(seeded);
     return seeded;
+  }
+
+  public createEmptyDatabase(): DatabaseSchema {
+    console.log('[DB] Initializing clean production database schema (no demo credentials seeded).');
+    const schema: DatabaseSchema = {
+      users: [],
+      teams: [],
+      teamMembers: [],
+      teamInvitations: [],
+      tournaments: [],
+      tournamentRegistrations: [],
+      matches: [],
+      brackets: [],
+      runSubmissions: [],
+      matchMessages: [],
+      matchEvidence: [],
+      matchDisputes: [],
+      adminTickets: [],
+      adminActions: [],
+      auditLogs: [],
+      notifications: []
+    };
+
+    // Secure production administrator bootstrap mechanism
+    if (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD) {
+      const nowIso = new Date().toISOString();
+      const adminUser: User = {
+        id: `usr-admin-${uuidv4().slice(0, 8)}`,
+        email: process.env.BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase(),
+        passwordHash: bcrypt.hashSync(process.env.BOOTSTRAP_ADMIN_PASSWORD, 10),
+        username: process.env.BOOTSTRAP_ADMIN_USERNAME || 'Admin',
+        displayName: process.env.BOOTSTRAP_ADMIN_NAME || 'Platform Administrator',
+        bungieId: process.env.BOOTSTRAP_ADMIN_BUNGIE || 'Admin#0001',
+        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=Admin`,
+        role: 'SUPERADMIN',
+        accountStatus: 'ACTIVE',
+        createdAt: nowIso,
+        updatedAt: nowIso
+      };
+      schema.users.push(adminUser);
+      console.log(`[DB] Bootstrapped production administrator: ${adminUser.email}`);
+    }
+
+    return schema;
   }
 
   public save(): void {

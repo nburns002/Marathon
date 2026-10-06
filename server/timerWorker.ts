@@ -423,7 +423,26 @@ export function processTimerWorkerTick() {
     ) {
       const matchDeadlineMs = new Date(match.matchDeadlineAt).getTime();
       if (nowMs >= matchDeadlineMs) {
-        // If Run 2 was not submitted by either team, auto-zero missing runs
+        const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+
+        // Authoritatively create zero-value RunSubmission records for every required missing run (Run 1 and Run 2)
+        if (match.teamAId && !match.teamARun1) {
+          const zeroA1 = calculateRunScore({ runnerKills: 0, extractedCredits: 0, playersExtracted: 0, objectiveCompleted: false });
+          const subA1 = {
+            id: uuidv4(),
+            matchId: match.id,
+            teamId: match.teamAId,
+            runNumber: 1 as const,
+            ...zeroA1,
+            submittedBy: 'SYSTEM',
+            submittedByName: 'SYSTEM (Window Expired - Zero Run)',
+            submittedAt: nowIso,
+            locked: true
+          };
+          db.data.runSubmissions.push(subA1);
+          match.teamARun1 = subA1;
+        }
+
         if (match.teamAId && !match.teamARun2) {
           const zeroA2 = calculateRunScore({ runnerKills: 0, extractedCredits: 0, playersExtracted: 0, objectiveCompleted: false });
           const subA2 = {
@@ -433,12 +452,29 @@ export function processTimerWorkerTick() {
             runNumber: 2 as const,
             ...zeroA2,
             submittedBy: 'SYSTEM',
-            submittedByName: 'SYSTEM (Deadline Expired)',
+            submittedByName: 'SYSTEM (Window Expired - Zero Run)',
             submittedAt: nowIso,
             locked: true
           };
           db.data.runSubmissions.push(subA2);
           match.teamARun2 = subA2;
+        }
+
+        if (match.teamBId && !match.teamBRun1) {
+          const zeroB1 = calculateRunScore({ runnerKills: 0, extractedCredits: 0, playersExtracted: 0, objectiveCompleted: false });
+          const subB1 = {
+            id: uuidv4(),
+            matchId: match.id,
+            teamId: match.teamBId,
+            runNumber: 1 as const,
+            ...zeroB1,
+            submittedBy: 'SYSTEM',
+            submittedByName: 'SYSTEM (Window Expired - Zero Run)',
+            submittedAt: nowIso,
+            locked: true
+          };
+          db.data.runSubmissions.push(subB1);
+          match.teamBRun1 = subB1;
         }
 
         if (match.teamBId && !match.teamBRun2) {
@@ -450,7 +486,7 @@ export function processTimerWorkerTick() {
             runNumber: 2 as const,
             ...zeroB2,
             submittedBy: 'SYSTEM',
-            submittedByName: 'SYSTEM (Deadline Expired)',
+            submittedByName: 'SYSTEM (Window Expired - Zero Run)',
             submittedAt: nowIso,
             locked: true
           };
@@ -458,9 +494,10 @@ export function processTimerWorkerTick() {
           match.teamBRun2 = subB2;
         }
 
+        const disputeMinutes = tourn?.disputeWindowMinutes || 10;
         match.matchStatus = 'RESULT_PENDING';
         match.run1Revealed = true;
-        match.disputeDeadlineAt = new Date(nowMs + 10 * 60 * 1000).toISOString();
+        match.disputeDeadlineAt = new Date(nowMs + disputeMinutes * 60 * 1000).toISOString();
         match.finalScoreA = Number(((match.teamARun1?.finalRunScore || 0) + (match.teamARun2?.finalRunScore || 0)).toFixed(2));
         match.finalScoreB = Number(((match.teamBRun1?.finalRunScore || 0) + (match.teamBRun2?.finalRunScore || 0)).toFixed(2));
         match.updatedAt = nowIso;
@@ -473,7 +510,7 @@ export function processTimerWorkerTick() {
           userName: 'SYSTEM',
           userRole: 'SYSTEM',
           type: 'SYSTEM',
-          message: `SYSTEM — 75-Minute Match Window expired. Unsubmitted runs awarded 0 pts. Provisional Result: ${match.teamAName} (${match.finalScoreA.toFixed(2)}) vs ${match.teamBName} (${match.finalScoreB.toFixed(2)}). 10-Minute Dispute Window started.`,
+          message: `SYSTEM — Match Window expired. Unsubmitted runs awarded 0 pts (Zero Run). Provisional Result: ${match.teamAName} (${match.finalScoreA.toFixed(2)}) vs ${match.teamBName} (${match.finalScoreB.toFixed(2)}). ${disputeMinutes}-Minute Dispute Window started.`,
           createdAt: nowIso
         });
 

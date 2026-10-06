@@ -20,6 +20,17 @@ async function startServer() {
   // SSE Real-time client manager
   const sseClients: Response[] = [];
 
+  // Heartbeat comment event every 20 seconds to keep reverse proxies from terminating idle SSE connections
+  setInterval(() => {
+    for (let i = sseClients.length - 1; i >= 0; i--) {
+      try {
+        sseClients[i].write(':keepalive\n\n');
+      } catch {
+        sseClients.splice(i, 1);
+      }
+    }
+  }, 20000);
+
   setEventBroadcaster((eventType: string, data: any) => {
     const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
     for (let i = sseClients.length - 1; i >= 0; i--) {

@@ -56,8 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (token) {
       fetchUserData(token);
     } else {
-      // By default for demo ease, switch to PlayerOne (Cryo Kings Captain) if no token
-      switchDemoUser('usr-capt-1');
+      setLoading(false);
     }
   }, []);
 

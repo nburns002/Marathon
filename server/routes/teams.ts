@@ -1,10 +1,24 @@
 import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
-import { AuthenticatedRequest, requireAuth } from '../middleware';
-import { Team, TeamMember, TeamInvitation } from '../../src/types';
+import { AuthenticatedRequest, requireAuth, optionalAuth } from '../middleware';
+import { TeamMember, TeamInvitation, PublicUser } from '../../src/types';
+import { buildViewerContext, serializeMatchForViewer } from '../serializer';
+import { normalizeBungieId } from '../registrationService';
 
 const router = Router();
+
+function toPublicUser(u?: { id: string; username: string; displayName: string; bungieId: string; avatarUrl: string; role: any } | null): PublicUser | undefined {
+  if (!u) return undefined;
+  return {
+    id: u.id,
+    username: u.username,
+    displayName: u.displayName,
+    bungieId: u.bungieId,
+    avatarUrl: u.avatarUrl,
+    role: u.role
+  };
+}
 
 // List all teams
 router.get('/', (req, res) => {
@@ -15,15 +29,7 @@ router.get('/', (req, res) => {
         const u = db.data.users.find((user) => user.id === tm.userId);
         return {
           ...tm,
-          user: u
-            ? {
-                id: u.id,
-                username: u.username,
-                displayName: u.displayName,
-                bungieId: u.bungieId,
-                avatarUrl: u.avatarUrl
-              }
-            : undefined
+          user: toPublicUser(u)
         };
       });
 
@@ -39,7 +45,7 @@ router.get('/', (req, res) => {
 
     return {
       ...team,
-      captain: captain ? { id: captain.id, username: captain.username, displayName: captain.displayName } : undefined,
+      captain: toPublicUser(captain),
       members,
       stats: {
         tournamentsPlayed: db.data.tournamentRegistrations.filter((r) => r.teamId === team.id && r.status === 'REGISTERED').length,
@@ -53,8 +59,8 @@ router.get('/', (req, res) => {
   return res.json({ teams: teamsWithDetails });
 });
 
-// Get team by ID
-router.get('/:id', (req, res) => {
+// Get team by ID with sanitized match history and privacy protection
+router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
   const team = db.data.teams.find((t) => t.id === req.params.id);
   if (!team) {
     return res.status(404).json({ error: 'Team not found.' });
@@ -66,30 +72,28 @@ router.get('/:id', (req, res) => {
       const u = db.data.users.find((user) => user.id === tm.userId);
       return {
         ...tm,
-        user: u
-          ? {
-              id: u.id,
-              username: u.username,
-              displayName: u.displayName,
-              bungieId: u.bungieId,
-              avatarUrl: u.avatarUrl
-            }
-          : undefined
+        user: toPublicUser(u)
       };
     });
 
   const captain = db.data.users.find((u) => u.id === team.captainUserId);
 
   const teamRegistrations = db.data.tournamentRegistrations.filter((r) => r.teamId === team.id && r.status === 'REGISTERED');
-  const teamMatches = db.data.matches.filter((m) => m.teamAId === team.id || m.teamBId === team.id);
+  const rawMatches = db.data.matches.filter((m) => m.teamAId === team.id || m.teamBId === team.id);
+
+  // Authoritatively sanitize team match history so unrevealed Run 1 data cannot leak here
+  const sanitizedMatches = rawMatches.map((m) => {
+    const viewerContext = buildViewerContext(req.user, m);
+    return serializeMatchForViewer(m, viewerContext);
+  });
 
   return res.json({
     team: {
       ...team,
-      captain,
+      captain: toPublicUser(captain),
       members,
       registrations: teamRegistrations,
-      matches: teamMatches
+      matches: sanitizedMatches
     }
   });
 });
@@ -111,13 +115,7 @@ router.get('/search/users', requireAuth, (req: AuthenticatedRequest, res: Respon
           u.email.toLowerCase().includes(q))
     )
     .slice(0, 10)
-    .map((u) => ({
-      id: u.id,
-      username: u.username,
-      displayName: u.displayName,
-      bungieId: u.bungieId,
-      avatarUrl: u.avatarUrl
-    }));
+    .map((u) => toPublicUser(u));
 
   return res.json({ users });
 });
@@ -128,20 +126,27 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const { name, tag, logoUrl } = req.body;
 
   if (!name || !tag) {
-    return res.status(400).json({ error: 'Team name and tag are required.' });
+    return res.status(400).json({ error: 'Team name and tag (2-4 uppercase characters) are required.' });
   }
 
-  const existingTeam = db.data.teams.find((t) => t.name.toLowerCase() === name.trim().toLowerCase());
-  if (existingTeam) {
+  const cleanName = name.trim();
+  const cleanTag = tag.trim().toUpperCase();
+
+  if (cleanTag.length < 2 || cleanTag.length > 5) {
+    return res.status(400).json({ error: 'Team tag must be between 2 and 5 characters.' });
+  }
+
+  const existingName = db.data.teams.find((t) => t.name.toLowerCase() === cleanName.toLowerCase());
+  if (existingName) {
     return res.status(400).json({ error: 'A team with this name already exists.' });
   }
 
   const isoNow = new Date().toISOString();
-  const newTeam: Team = {
+  const newTeam = {
     id: `team-${uuidv4().slice(0, 8)}`,
-    name: name.trim(),
-    tag: tag.trim().toUpperCase(),
-    logoUrl: logoUrl?.trim() || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name.trim())}`,
+    name: cleanName,
+    tag: cleanTag,
+    logoUrl: logoUrl || `https://images.unsplash.com/photo-1542751371-adc38448a05e?w=128&auto=format&fit=crop&q=80`,
     captainUserId: user.id,
     createdAt: isoNow
   };
@@ -159,7 +164,6 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   };
   db.data.teamMembers.push(captainMember);
 
-  // Update user role to CAPTAIN if they were just PLAYER
   if (user.role === 'PLAYER') {
     user.role = 'CAPTAIN';
   }
@@ -180,7 +184,7 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   return res.status(201).json({ team: newTeam });
 });
 
-// Send team invitation
+// Send team invitation (Supports explicit targetUserId OR identifier resolver)
 router.post('/:id/invite', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   const team = db.data.teams.find((t) => t.id === req.params.id);
@@ -198,19 +202,36 @@ router.post('/:id/invite', requireAuth, (req: AuthenticatedRequest, res: Respons
     return res.status(400).json({ error: 'Team already has the maximum of 3 active players.' });
   }
 
-  const { targetUserId } = req.body;
-  const targetUser = db.data.users.find((u) => u.id === targetUserId);
-  if (!targetUser) {
-    return res.status(404).json({ error: 'Target user does not exist. Users must register before joining a team.' });
+  const { targetUserId, identifier } = req.body;
+
+  let targetUser = null;
+  if (targetUserId) {
+    targetUser = db.data.users.find((u) => u.id === targetUserId);
+  } else if (identifier && typeof identifier === 'string') {
+    const rawId = identifier.trim();
+    const normBungie = normalizeBungieId(rawId);
+    targetUser = db.data.users.find(
+      (u) =>
+        u.id === rawId ||
+        u.username.toLowerCase() === rawId.toLowerCase() ||
+        u.email.toLowerCase() === rawId.toLowerCase() ||
+        normalizeBungieId(u.bungieId) === normBungie
+    );
   }
 
-  const alreadyMember = activeMembers.some((m) => m.userId === targetUser.id);
+  if (!targetUser) {
+    return res.status(404).json({
+      error: 'Target player not found. Please ensure the user has created an account before inviting them.'
+    });
+  }
+
+  const alreadyMember = activeMembers.some((m) => m.userId === targetUser!.id);
   if (alreadyMember) {
     return res.status(400).json({ error: `${targetUser.username} is already an active member of this team.` });
   }
 
   const pendingInvite = db.data.teamInvitations.find(
-    (inv) => inv.teamId === team.id && inv.invitedUserId === targetUser.id && inv.status === 'PENDING'
+    (inv) => inv.teamId === team.id && inv.invitedUserId === targetUser!.id && inv.status === 'PENDING'
   );
   if (pendingInvite) {
     return res.status(400).json({ error: 'An invitation is already pending for this player.' });
@@ -230,7 +251,6 @@ router.post('/:id/invite', requireAuth, (req: AuthenticatedRequest, res: Respons
 
   db.data.teamInvitations.push(invitation);
 
-  // Send notification to target user
   db.data.notifications.push({
     id: uuidv4(),
     userId: targetUser.id,
@@ -259,7 +279,7 @@ router.post('/invitations/:id/respond', requireAuth, (req: AuthenticatedRequest,
     return res.status(400).json({ error: `Invitation has already been ${invitation.status.toLowerCase()}.` });
   }
 
-  const { action } = req.body; // 'ACCEPT' | 'DECLINE'
+  const { action } = req.body;
   const isoNow = new Date().toISOString();
 
   if (action === 'ACCEPT') {
@@ -280,7 +300,6 @@ router.post('/invitations/:id/respond', requireAuth, (req: AuthenticatedRequest,
     };
     db.data.teamMembers.push(newMember);
 
-    // Notify captain
     const team = db.data.teams.find((t) => t.id === invitation.teamId);
     if (team) {
       db.data.notifications.push({

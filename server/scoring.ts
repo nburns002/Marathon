@@ -78,63 +78,121 @@ export function calculateRunScore(input: ScoreCalculationInput): ScoreCalculatio
  * Parses structured chat command:
  * /score run1 kills:6 loot:48000 survived:3 objective:yes
  */
-export function parseScoreCommand(commandText: string): {
+export interface ParsedScoreCommand {
   runNumber: 1 | 2;
   runnerKills: number;
   extractedCredits: number;
   playersExtracted: 0 | 1 | 2 | 3;
   objectiveCompleted: boolean;
-} | null {
+}
+
+export interface ParseScoreCommandResult {
+  success: boolean;
+  data?: ParsedScoreCommand;
+  error?: string;
+}
+
+/**
+ * Parses structured chat command with strict validation:
+ * /score run1 kills:6 loot:48000 survived:3 objective:yes
+ * Required values cannot silently default to zero because of a typo.
+ */
+export function parseScoreCommandStrict(commandText: string): ParseScoreCommandResult {
   const trimmed = commandText.trim();
-  if (!trimmed.startsWith('/score')) return null;
+  if (!trimmed.startsWith('/score')) {
+    return { success: false, error: 'Command must start with /score.' };
+  }
 
   const parts = trimmed.split(/\s+/);
-  if (parts.length < 2) return null;
+  if (parts.length < 2) {
+    return { success: false, error: 'Missing run number. Usage: /score run1 kills:<n> loot:<n> survived:<0-3> objective:<yes/no>' };
+  }
 
   const runArg = parts[1].toLowerCase();
-  let runNumber: 1 | 2 = 1;
+  let runNumber: 1 | 2;
   if (runArg === 'run1' || runArg === '1') {
     runNumber = 1;
   } else if (runArg === 'run2' || runArg === '2') {
     runNumber = 2;
   } else {
-    return null;
+    return { success: false, error: `Invalid run number '${parts[1]}'. Must be run1 or run2.` };
   }
 
-  let runnerKills = 0;
-  let extractedCredits = 0;
-  let playersExtracted: 0 | 1 | 2 | 3 = 0;
-  let objectiveCompleted = false;
+  let runnerKills: number | null = null;
+  let extractedCredits: number | null = null;
+  let playersExtracted: (0 | 1 | 2 | 3) | null = null;
+  let objectiveCompleted: boolean | null = null;
 
   for (let i = 2; i < parts.length; i++) {
     const item = parts[i];
-    const [key, val] = item.split(':');
-    if (!key || val === undefined) continue;
+    const colonIdx = item.indexOf(':');
+    if (colonIdx === -1) {
+      return { success: false, error: `Invalid parameter '${item}'. Format must be key:value.` };
+    }
 
-    const k = key.toLowerCase();
-    const v = val.toLowerCase();
+    const k = item.slice(0, colonIdx).toLowerCase();
+    const v = item.slice(colonIdx + 1).toLowerCase();
 
     if (k === 'kills' || k === 'kill' || k === 'k') {
-      runnerKills = parseInt(v, 10) || 0;
+      const parsed = parseInt(v, 10);
+      if (isNaN(parsed) || parsed < 0) {
+        return { success: false, error: `Invalid kills value '${v}'. Must be a non-negative integer.` };
+      }
+      runnerKills = parsed;
     } else if (k === 'loot' || k === 'credits' || k === 'credit' || k === 'c') {
-      extractedCredits = parseFloat(v.replace(/,/g, '')) || 0;
+      const cleanVal = v.replace(/,/g, '');
+      const parsed = parseFloat(cleanVal);
+      if (isNaN(parsed) || parsed < 0) {
+        return { success: false, error: `Invalid loot/credits value '${v}'. Must be a non-negative number.` };
+      }
+      extractedCredits = parsed;
     } else if (k === 'survived' || k === 'extracted' || k === 'survivors' || k === 's') {
       const parsed = parseInt(v, 10);
-      if (parsed >= 0 && parsed <= 3) {
-        playersExtracted = parsed as 0 | 1 | 2 | 3;
+      if (isNaN(parsed) || parsed < 0 || parsed > 3) {
+        return { success: false, error: `Invalid survived/extracted value '${v}'. Must be 0, 1, 2, or 3.` };
       }
+      playersExtracted = parsed as 0 | 1 | 2 | 3;
     } else if (k === 'objective' || k === 'obj' || k === 'o') {
-      objectiveCompleted = v === 'yes' || v === 'true' || v === '1' || v === 'y';
+      if (v === 'yes' || v === 'true' || v === '1' || v === 'y') {
+        objectiveCompleted = true;
+      } else if (v === 'no' || v === 'false' || v === '0' || v === 'n') {
+        objectiveCompleted = false;
+      } else {
+        return { success: false, error: `Invalid objective value '${v}'. Must be yes or no.` };
+      }
+    } else {
+      return { success: false, error: `Unknown parameter '${k}'. Supported keys: kills, loot, survived, objective.` };
     }
   }
 
+  const missing: string[] = [];
+  if (runnerKills === null) missing.push('kills:<n>');
+  if (extractedCredits === null) missing.push('loot:<n>');
+  if (playersExtracted === null) missing.push('survived:<0-3>');
+  if (objectiveCompleted === null) missing.push('objective:<yes/no>');
+
+  if (missing.length > 0) {
+    return {
+      success: false,
+      error: `Missing required scoring fields: ${missing.join(', ')}. Example: /score ${runArg} kills:6 loot:48000 survived:3 objective:yes`
+    };
+  }
+
   return {
-    runNumber,
-    runnerKills,
-    extractedCredits,
-    playersExtracted,
-    objectiveCompleted
+    success: true,
+    data: {
+      runNumber,
+      runnerKills,
+      extractedCredits,
+      playersExtracted,
+      objectiveCompleted
+    }
   };
+}
+
+export function parseScoreCommand(commandText: string): ParsedScoreCommand | null {
+  const result = parseScoreCommandStrict(commandText);
+  return result.success && result.data ? result.data : null;
 }
 
 export interface RunDataForTiebreaker {
