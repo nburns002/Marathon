@@ -44,8 +44,8 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
   // Registration Modal State
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
-  const [termsAccepted, setTermsAccepted] = useState(true);
-  const [refundPolicyAccepted, setRefundPolicyAccepted] = useState(true);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [refundPolicyAccepted, setRefundPolicyAccepted] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState('');
   const [registerSuccess, setRegisterSuccess] = useState('');

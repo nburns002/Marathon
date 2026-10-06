@@ -241,17 +241,17 @@ function handleScoreSubmission(req: AuthenticatedRequest, res: Response) {
     matchId,
     user,
     teamId,
-    runNumber: Number(runNumber),
-    runnerKills: Number(runnerKills),
-    extractedCredits: Number(extractedCredits),
-    playersExtracted: Number(playersExtracted),
-    objectiveCompleted: Boolean(objectiveCompleted),
+    runNumber,
+    runnerKills,
+    extractedCredits,
+    playersExtracted,
+    objectiveCompleted,
     evidenceUrl,
     isChatCommand: false
   });
 
   if (!result.success) {
-    return res.status(400).json({ error: result.error });
+    return res.status(result.statusCode || 400).json({ error: result.error });
   }
 
   return res.json(result);
@@ -325,7 +325,7 @@ router.post('/:id/messages', requireAuth, (req: AuthenticatedRequest, res: Respo
     });
 
     if (!submitRes.success) {
-      return res.status(400).json({ error: submitRes.error });
+      return res.status(submitRes.statusCode || 400).json({ error: submitRes.error });
     }
 
     return res.json({

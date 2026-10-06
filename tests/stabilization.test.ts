@@ -1,5 +1,8 @@
 import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'marathon_test_suite_secure_jwt_secret_32_characters';
+
 import fs from 'fs';
 import path from 'path';
 import express, { Express } from 'express';

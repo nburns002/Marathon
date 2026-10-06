@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, requireAdmin } from '../middleware';
-import { calculateRunScore, determineMatchWinner } from '../scoring';
+import { calculateRunScore, determineMatchWinner, validateScoreInputs } from '../scoring';
 import { advanceMatchWinner, reconcileMatchAdvancement, calculateTournamentCurrentRound } from '../bracket';
 import { AdminAction, AuditLog } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
@@ -60,16 +60,16 @@ function applyAuthoritativeAdminScoreCorrection(params: {
   match: any;
   admin: any;
   teamId: string;
-  runNumber: number;
-  runnerKills: number;
-  extractedCredits: number;
-  playersExtracted: number;
-  objectiveCompleted: boolean;
+  runNumber: any;
+  runnerKills: any;
+  extractedCredits: any;
+  playersExtracted: any;
+  objectiveCompleted: any;
   reason: string;
 }): { success: boolean; error?: string; oldScoreStr?: string; newScoreStr?: string } {
   const { match, admin, teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = params;
 
-  if (!reason || !reason.trim()) {
+  if (!reason || typeof reason !== 'string' || !reason.trim()) {
     return { success: false, error: 'A mandatory written reason is required for score overrides.' };
   }
 
@@ -81,14 +81,19 @@ function applyAuthoritativeAdminScoreCorrection(params: {
     };
   }
 
-  // 2. runNumber must be exactly 1 or 2
-  const runNum = Number(runNumber);
-  if (runNum !== 1 && runNum !== 2) {
-    return {
-      success: false,
-      error: `Invalid runNumber '${runNumber}'. Must be exactly 1 or 2.`
-    };
+  // 2. Strict Score Input Validation (NO permissive coercion, NO Math.floor(), NO Boolean())
+  const validation = validateScoreInputs({
+    runNumber,
+    runnerKills,
+    extractedCredits,
+    playersExtracted,
+    objectiveCompleted
+  });
+  if (!validation.valid) {
+    return { success: false, error: validation.error };
   }
+
+  const runNum = runNumber as 1 | 2;
 
   // 3. The targeted RunSubmission must exist before an override is accepted
   const isSlotA = teamId === match.teamAId;
@@ -104,26 +109,12 @@ function applyAuthoritativeAdminScoreCorrection(params: {
     };
   }
 
-  const killsNum = Math.floor(Number(runnerKills));
-  const lootNum = Number(extractedCredits);
-  const survivorsNum = Math.floor(Number(playersExtracted));
-
-  if (isNaN(killsNum) || killsNum < 0) {
-    return { success: false, error: 'Runner kills must be a non-negative integer.' };
-  }
-  if (isNaN(lootNum) || lootNum < 0) {
-    return { success: false, error: 'Extracted credits must be a non-negative number.' };
-  }
-  if (![0, 1, 2, 3].includes(survivorsNum)) {
-    return { success: false, error: 'Players extracted must be an integer between 0 and 3.' };
-  }
-
   const tournament = db.data.tournaments.find((t) => t.id === match.tournamentId);
   const calculated = calculateRunScore({
-    runnerKills: killsNum,
-    extractedCredits: lootNum,
-    playersExtracted: survivorsNum as 0 | 1 | 2 | 3,
-    objectiveCompleted: Boolean(objectiveCompleted),
+    runnerKills,
+    extractedCredits,
+    playersExtracted: playersExtracted as 0 | 1 | 2 | 3,
+    objectiveCompleted,
     objectivePointsValue: tournament?.featuredObjectivePoints || 5
   });
 
@@ -285,9 +276,13 @@ router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: Authentica
     return res.status(404).json({ error: 'Dispute not found.' });
   }
 
-  // Reject resolving an already resolved dispute
-  if (dispute.status === 'RESOLVED') {
-    return res.status(400).json({ error: 'Dispute has already been resolved.' });
+  // Only disputes currently in OPEN or INVESTIGATING status may be resolved.
+  // Reject RESOLVED and DISMISSED with HTTP 400.
+  const allowedDisputeStatuses = ['OPEN', 'INVESTIGATING'];
+  if (!allowedDisputeStatuses.includes(dispute.status)) {
+    return res.status(400).json({
+      error: `Cannot resolve dispute with status '${dispute.status}'. Only disputes in OPEN or INVESTIGATING status may be resolved.`
+    });
   }
 
   const { resolution, ruling, newScoreData, reason } = req.body;
@@ -306,11 +301,11 @@ router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: Authentica
       match,
       admin,
       teamId: newScoreData.teamId,
-      runNumber: Number(newScoreData.runNumber),
-      runnerKills: Number(newScoreData.runnerKills),
-      extractedCredits: Number(newScoreData.extractedCredits),
-      playersExtracted: Number(newScoreData.playersExtracted),
-      objectiveCompleted: Boolean(newScoreData.objectiveCompleted),
+      runNumber: newScoreData.runNumber,
+      runnerKills: newScoreData.runnerKills,
+      extractedCredits: newScoreData.extractedCredits,
+      playersExtracted: newScoreData.playersExtracted,
+      objectiveCompleted: newScoreData.objectiveCompleted,
       reason
     });
 
@@ -377,6 +372,13 @@ router.post('/tickets/:id/update-status', requireAuth, requireAdmin, (req: Authe
   }
 
   const { status, resolutionNotes } = req.body;
+  const validTicketStatuses = ['OPEN', 'CLAIMED', 'INVESTIGATING', 'RESOLVED', 'DISMISSED'];
+  if (!status || !validTicketStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `Invalid ticket status '${status}'. Must be one of: ${validTicketStatuses.join(', ')}.`
+    });
+  }
+
   ticket.status = status;
   ticket.assignedAdminId = admin.id;
   ticket.assignedAdminName = admin.displayName || admin.username;
@@ -402,11 +404,11 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     match,
     admin,
     teamId,
-    runNumber: Number(runNumber),
-    runnerKills: Number(runnerKills),
-    extractedCredits: Number(extractedCredits),
-    playersExtracted: Number(playersExtracted),
-    objectiveCompleted: Boolean(objectiveCompleted),
+    runNumber,
+    runnerKills,
+    extractedCredits,
+    playersExtracted,
+    objectiveCompleted,
     reason
   });
 

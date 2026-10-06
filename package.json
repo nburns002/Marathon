@@ -8,7 +8,7 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.cjs",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "JWT_SECRET=marathon_test_suite_secure_jwt_secret_32_characters tsx --test tests/**/*.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

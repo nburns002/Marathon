@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
-import { calculateRunScore } from './scoring';
+import { calculateRunScore, validateScoreInputs } from './scoring';
 import { broadcastEvent } from './timerWorker';
 import { Match, RunSubmission, User } from '../src/types';
 
@@ -19,6 +19,7 @@ export interface ScoreSubmissionInput {
 
 export interface ScoreSubmissionResult {
   success: boolean;
+  statusCode?: number;
   error?: string;
   submission?: RunSubmission;
   match?: Match;
@@ -27,33 +28,45 @@ export interface ScoreSubmissionResult {
 
 /**
  * Authoritative score submission service used by BOTH the GUI endpoint and `/score` chat command.
- * Enforces strict run sequencing, match state validation, immutability, participant authorization,
+ * Enforces strict run sequencing, match state validation, immutability, captain-only authorization,
  * tournament objective configuration, and phase transitions.
  */
 export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubmissionResult {
-  const { matchId, user, runNumber, evidenceUrl, isChatCommand } = input;
+  const { matchId, user, evidenceUrl } = input;
+
+  // 1. Strict Score Input Validation (rejects non-numeric, floats for integers, non-booleans, negative values)
+  const validation = validateScoreInputs({
+    runNumber: input.runNumber,
+    runnerKills: input.runnerKills,
+    extractedCredits: input.extractedCredits,
+    playersExtracted: input.playersExtracted,
+    objectiveCompleted: input.objectiveCompleted
+  });
+  if (!validation.valid) {
+    return { success: false, statusCode: 400, error: validation.error };
+  }
+
+  const runNum = input.runNumber as 1 | 2;
 
   const match = db.data.matches.find((m) => m.id === matchId);
   if (!match) {
-    return { success: false, error: 'Match not found.' };
+    return { success: false, statusCode: 404, error: 'Match not found.' };
   }
 
-  // 1. Match State Validation
+  // 2. Match State Validation
   const validScoringStates = ['ACTIVE', 'RUN_1_PARTIAL', 'RUN_1_COMPLETE'];
   if (!validScoringStates.includes(match.matchStatus)) {
     return {
       success: false,
+      statusCode: 400,
       error: `Score submissions are not permitted while match is in '${match.matchStatus}' state. Match must be in an active scoring phase.`
     };
   }
 
-  // 2. Run Number Validation (strictly 1 or 2)
-  if (runNumber !== 1 && runNumber !== 2) {
-    return { success: false, error: 'Run number must be exactly 1 or 2.' };
-  }
-  const runNum = runNumber as 1 | 2;
-
-  // 3. Participant Authorization & Target Team Validation
+  // 3. Captain-Only Authorization Policy
+  // Only the designated captain of Team A or Team B may submit official scores.
+  // Ordinary roster members are rejected with 403.
+  // Administrators must use audited score correction/override tools.
   const teamA = match.teamAId ? db.data.teams.find((t) => t.id === match.teamAId) : null;
   const teamB = match.teamBId ? db.data.teams.find((t) => t.id === match.teamBId) : null;
 
@@ -66,58 +79,49 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
 
   const isCaptainA = teamA?.captainUserId === user.id || regA?.captainUserId === user.id;
   const isCaptainB = teamB?.captainUserId === user.id || regB?.captainUserId === user.id;
-
-  const isRosterA =
-    isCaptainA ||
-    (regA?.rosterSnapshot && regA.rosterSnapshot.some((r) => r.userId === user.id)) ||
-    (match.teamAId ? db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id) : false);
-
-  const isRosterB =
-    isCaptainB ||
-    (regB?.rosterSnapshot && regB.rosterSnapshot.some((r) => r.userId === user.id)) ||
-    (match.teamBId ? db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id) : false);
-
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
-  if (!isRosterA && !isRosterB && !isAdmin) {
-    return { success: false, error: 'You are not a confirmed participant in this match.' };
+  if (isAdmin) {
+    return {
+      success: false,
+      statusCode: 403,
+      error: 'Administrators must use audited admin score correction/override tools rather than the player score endpoint.'
+    };
   }
 
-  if (isChatCommand && !isCaptainA && !isCaptainB && !isAdmin) {
-    return { success: false, error: 'Only the designated Team Captain may submit scores using the /score command.' };
+  if (!isCaptainA && !isCaptainB) {
+    return {
+      success: false,
+      statusCode: 403,
+      error: 'Only designated Team Captains may submit official scores for their team.'
+    };
   }
 
-  // Determine target team
+  // Determine target team for captain
   let targetTeamId = input.teamId;
   if (!targetTeamId) {
-    if (isRosterA && !isRosterB) {
+    if (isCaptainA && !isCaptainB) {
       targetTeamId = match.teamAId!;
-    } else if (isRosterB && !isRosterA) {
-      targetTeamId = match.teamBId!;
-    } else if (isCaptainA) {
-      targetTeamId = match.teamAId!;
-    } else if (isCaptainB) {
+    } else if (isCaptainB && !isCaptainA) {
       targetTeamId = match.teamBId!;
     } else {
-      return { success: false, error: 'Target teamId must be explicitly specified.' };
+      return { success: false, statusCode: 400, error: 'Target teamId must be explicitly specified.' };
     }
   }
 
-  // Verify user belongs to the target team (cannot submit for opponent)
-  if (!isAdmin) {
-    if (targetTeamId === match.teamAId && !isRosterA) {
-      return { success: false, error: 'You cannot submit scores for Team A.' };
-    }
-    if (targetTeamId === match.teamBId && !isRosterB) {
-      return { success: false, error: 'You cannot submit scores for Team B.' };
-    }
+  // Captains may only submit for their own team
+  if (isCaptainA && !isCaptainB && targetTeamId !== match.teamAId) {
+    return { success: false, statusCode: 403, error: 'Captains may only submit scores for their own team.' };
+  }
+  if (isCaptainB && !isCaptainA && targetTeamId !== match.teamBId) {
+    return { success: false, statusCode: 403, error: 'Captains may only submit scores for their own team.' };
   }
 
   const isSlotA = targetTeamId === match.teamAId;
   const isSlotB = targetTeamId === match.teamBId;
 
   if (!isSlotA && !isSlotB) {
-    return { success: false, error: `Invalid target team ID '${targetTeamId}'. Must be one of the match participants.` };
+    return { success: false, statusCode: 400, error: `Invalid target team ID '${targetTeamId}'. Must be one of the match participants.` };
   }
 
   const targetTeamName = isSlotA ? (match.teamAName || 'Team A') : (match.teamBName || 'Team B');
@@ -127,6 +131,7 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
     if ((isSlotA && match.teamARun1) || (isSlotB && match.teamBRun1)) {
       return {
         success: false,
+        statusCode: 400,
         error: `Run 1 score for ${targetTeamName} is already locked and immutable. Corrections require an audited administrator score correction.`
       };
     }
@@ -136,6 +141,7 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
     if ((isSlotA && match.teamARun2) || (isSlotB && match.teamBRun2)) {
       return {
         success: false,
+        statusCode: 400,
         error: `Run 2 score for ${targetTeamName} is already locked and immutable. Corrections require an audited administrator score correction.`
       };
     }
@@ -147,36 +153,21 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
     if (!match.teamARun1 || !match.teamBRun1 || !match.run1Revealed) {
       return {
         success: false,
+        statusCode: 400,
         error: 'Run 2 cannot be submitted until BOTH teams have submitted Run 1 and Run 1 scores have been authoritatively revealed.'
       };
     }
   }
 
-  // 6. Strict Numeric Validation
-  const runnerKills = Math.floor(Number(input.runnerKills));
-  const extractedCredits = Number(input.extractedCredits);
-  const playersExtracted = Math.floor(Number(input.playersExtracted));
-  const objectiveCompleted = Boolean(input.objectiveCompleted);
-
-  if (isNaN(runnerKills) || runnerKills < 0) {
-    return { success: false, error: 'Runner kills must be a non-negative integer.' };
-  }
-  if (isNaN(extractedCredits) || extractedCredits < 0) {
-    return { success: false, error: 'Extracted credits must be a non-negative number.' };
-  }
-  if (![0, 1, 2, 3].includes(playersExtracted)) {
-    return { success: false, error: 'Players extracted must be an integer between 0 and 3.' };
-  }
-
-  // 7. Tournament Objective Configuration & Run Score Calculation
+  // 6. Tournament Objective Configuration & Run Score Calculation (NO COERCION)
   const tournament = db.data.tournaments.find((t) => t.id === match.tournamentId);
   const featuredObjectivePoints = tournament?.featuredObjectivePoints ?? 5;
 
   const calculated = calculateRunScore({
-    runnerKills,
-    extractedCredits,
-    playersExtracted: playersExtracted as 0 | 1 | 2 | 3,
-    objectiveCompleted,
+    runnerKills: input.runnerKills,
+    extractedCredits: input.extractedCredits,
+    playersExtracted: input.playersExtracted as 0 | 1 | 2 | 3,
+    objectiveCompleted: input.objectiveCompleted,
     objectivePointsValue: featuredObjectivePoints
   });
 

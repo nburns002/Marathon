@@ -4,17 +4,16 @@ import { db } from './db';
 import { User } from '../src/types';
 
 export function getJwtSecret(): string {
-  if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE !== 'true') {
-    const secret = process.env.JWT_SECRET;
-    if (!secret || secret.length < 32 || secret === 'marathon_tournament_platform_jwt_secret_2026') {
-      throw new Error('FATAL: Non-demo deployments require a secure JWT_SECRET environment variable with at least 32 characters.');
-    }
-    return secret;
+  if (process.env.DEMO_MODE === 'true') {
+    return process.env.JWT_SECRET || 'marathon_tournament_platform_jwt_secret_2026';
   }
-  return process.env.JWT_SECRET || 'marathon_tournament_platform_jwt_secret_2026';
-}
 
-const JWT_SECRET = getJwtSecret();
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.length < 32 || secret === 'marathon_tournament_platform_jwt_secret_2026') {
+    throw new Error('FATAL: Non-demo deployments require a secure JWT_SECRET environment variable with at least 32 characters.');
+  }
+  return secret;
+}
 
 export interface AuthenticatedRequest extends Request {
   user?: User;
@@ -28,7 +27,7 @@ export function generateToken(user: { id: string; email: string; username: strin
       username: user.username,
       role: user.role
     },
-    JWT_SECRET,
+    getJwtSecret(),
     { expiresIn: '7d' }
   );
 }
@@ -41,7 +40,7 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+    const decoded = jwt.verify(token, getJwtSecret()) as { id: string };
     const userRecord = db.data.users.find((u) => u.id === decoded.id);
 
     if (!userRecord || userRecord.accountStatus === 'SUSPENDED') {
@@ -61,7 +60,7 @@ export function optionalAuth(req: AuthenticatedRequest, res: Response, next: Nex
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+      const decoded = jwt.verify(token, getJwtSecret()) as { id: string };
       const userRecord = db.data.users.find((u) => u.id === decoded.id);
       if (userRecord && userRecord.accountStatus !== 'SUSPENDED') {
         const { passwordHash: _, ...safeUser } = userRecord;

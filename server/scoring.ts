@@ -75,6 +75,45 @@ export function calculateRunScore(input: ScoreCalculationInput): ScoreCalculatio
 }
 
 /**
+ * Strict validator for tournament score inputs.
+ * Requires exact types and ranges with no permissive coercion.
+ */
+export function validateScoreInputs(inputs: {
+  runNumber?: any;
+  runnerKills?: any;
+  extractedCredits?: any;
+  playersExtracted?: any;
+  objectiveCompleted?: any;
+}): { valid: true; error?: undefined } | { valid: false; error: string } {
+  // runNumber: typeof number, Number.isInteger, exactly 1 or 2
+  if (typeof inputs.runNumber !== 'number' || !Number.isInteger(inputs.runNumber) || (inputs.runNumber !== 1 && inputs.runNumber !== 2)) {
+    return { valid: false, error: 'Invalid runNumber: must be an integer, exactly 1 or 2.' };
+  }
+
+  // runnerKills: typeof number, Number.isFinite, Number.isInteger, >= 0
+  if (typeof inputs.runnerKills !== 'number' || !Number.isFinite(inputs.runnerKills) || !Number.isInteger(inputs.runnerKills) || inputs.runnerKills < 0) {
+    return { valid: false, error: 'Runner kills must be a non-negative finite integer.' };
+  }
+
+  // extractedCredits: typeof number, Number.isFinite, >= 0
+  if (typeof inputs.extractedCredits !== 'number' || !Number.isFinite(inputs.extractedCredits) || inputs.extractedCredits < 0) {
+    return { valid: false, error: 'Extracted credits must be a non-negative finite number.' };
+  }
+
+  // playersExtracted: typeof number, Number.isInteger, exactly 0, 1, 2, or 3
+  if (typeof inputs.playersExtracted !== 'number' || !Number.isInteger(inputs.playersExtracted) || ![0, 1, 2, 3].includes(inputs.playersExtracted)) {
+    return { valid: false, error: 'Players extracted must be an integer: exactly 0, 1, 2, or 3.' };
+  }
+
+  // objectiveCompleted: typeof boolean
+  if (typeof inputs.objectiveCompleted !== 'boolean') {
+    return { valid: false, error: 'Objective completed must be a boolean.' };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Parses structured chat command:
  * /score run1 kills:6 loot:48000 survived:3 objective:yes
  */
@@ -96,6 +135,7 @@ export interface ParseScoreCommandResult {
  * Parses structured chat command with strict validation:
  * /score run1 kills:6 loot:48000 survived:3 objective:yes
  * Required values cannot silently default to zero because of a typo.
+ * Rejects partially numeric or duplicate command values.
  */
 export function parseScoreCommandStrict(commandText: string): ParseScoreCommandResult {
   const trimmed = commandText.trim();
@@ -122,6 +162,7 @@ export function parseScoreCommandStrict(commandText: string): ParseScoreCommandR
   let extractedCredits: number | null = null;
   let playersExtracted: (0 | 1 | 2 | 3) | null = null;
   let objectiveCompleted: boolean | null = null;
+  const seenCanonicalKeys = new Set<string>();
 
   for (let i = 2; i < parts.length; i++) {
     const item = parts[i];
@@ -131,37 +172,58 @@ export function parseScoreCommandStrict(commandText: string): ParseScoreCommandR
     }
 
     const k = item.slice(0, colonIdx).toLowerCase();
-    const v = item.slice(colonIdx + 1).toLowerCase();
+    const v = item.slice(colonIdx + 1);
+    const vLower = v.toLowerCase();
 
-    if (k === 'kills' || k === 'kill' || k === 'k') {
-      const parsed = parseInt(v, 10);
-      if (isNaN(parsed) || parsed < 0) {
+    let canonicalKey: string;
+    if (k === 'kills' || k === 'kill' || k === 'k') canonicalKey = 'kills';
+    else if (k === 'loot' || k === 'credits' || k === 'credit' || k === 'c') canonicalKey = 'loot';
+    else if (k === 'survived' || k === 'extracted' || k === 'survivors' || k === 's') canonicalKey = 'survived';
+    else if (k === 'objective' || k === 'obj' || k === 'o') canonicalKey = 'objective';
+    else {
+      return { success: false, error: `Unknown parameter '${k}'. Supported keys: kills, loot, survived, objective.` };
+    }
+
+    if (seenCanonicalKeys.has(canonicalKey)) {
+      return { success: false, error: `Duplicate parameter '${canonicalKey}' in command.` };
+    }
+    seenCanonicalKeys.add(canonicalKey);
+
+    if (canonicalKey === 'kills') {
+      // Must be entirely a non-negative integer string (no partial strings like 6abc, no floats like 4.5)
+      if (!/^\d+$/.test(vLower)) {
+        return { success: false, error: `Invalid kills value '${v}'. Must be a non-negative integer.` };
+      }
+      const parsed = Number(vLower);
+      if (!Number.isSafeInteger(parsed) || parsed < 0) {
         return { success: false, error: `Invalid kills value '${v}'. Must be a non-negative integer.` };
       }
       runnerKills = parsed;
-    } else if (k === 'loot' || k === 'credits' || k === 'credit' || k === 'c') {
-      const cleanVal = v.replace(/,/g, '');
-      const parsed = parseFloat(cleanVal);
-      if (isNaN(parsed) || parsed < 0) {
+    } else if (canonicalKey === 'loot') {
+      const cleanVal = vLower.replace(/,/g, '');
+      // Must be entirely a non-negative numeric token (can have decimals)
+      if (!/^\d+(\.\d+)?$/.test(cleanVal)) {
+        return { success: false, error: `Invalid loot/credits value '${v}'. Must be a non-negative number.` };
+      }
+      const parsed = Number(cleanVal);
+      if (!Number.isFinite(parsed) || parsed < 0) {
         return { success: false, error: `Invalid loot/credits value '${v}'. Must be a non-negative number.` };
       }
       extractedCredits = parsed;
-    } else if (k === 'survived' || k === 'extracted' || k === 'survivors' || k === 's') {
-      const parsed = parseInt(v, 10);
-      if (isNaN(parsed) || parsed < 0 || parsed > 3) {
+    } else if (canonicalKey === 'survived') {
+      // Must be strictly '0', '1', '2', or '3' (no partial like 2.5 or 2abc)
+      if (!/^[0-3]$/.test(vLower)) {
         return { success: false, error: `Invalid survived/extracted value '${v}'. Must be 0, 1, 2, or 3.` };
       }
-      playersExtracted = parsed as 0 | 1 | 2 | 3;
-    } else if (k === 'objective' || k === 'obj' || k === 'o') {
-      if (v === 'yes' || v === 'true' || v === '1' || v === 'y') {
+      playersExtracted = Number(vLower) as 0 | 1 | 2 | 3;
+    } else if (canonicalKey === 'objective') {
+      if (vLower === 'yes' || vLower === 'true' || vLower === '1' || vLower === 'y') {
         objectiveCompleted = true;
-      } else if (v === 'no' || v === 'false' || v === '0' || v === 'n') {
+      } else if (vLower === 'no' || vLower === 'false' || vLower === '0' || vLower === 'n') {
         objectiveCompleted = false;
       } else {
         return { success: false, error: `Invalid objective value '${v}'. Must be yes or no.` };
       }
-    } else {
-      return { success: false, error: `Unknown parameter '${k}'. Supported keys: kills, loot, survived, objective.` };
     }
   }
 

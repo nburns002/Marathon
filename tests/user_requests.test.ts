@@ -1,5 +1,8 @@
 import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'marathon_test_suite_secure_jwt_secret_32_characters';
+
 import fs from 'fs';
 import path from 'path';
 import express, { Express } from 'express';
@@ -593,5 +596,102 @@ describe('User Requests & Defect Resolution Suite', () => {
     });
 
     assert.equal(capRes.status, 200, 'Participant must be permitted to request referee');
+  });
+
+  test('8. Captain-Only score submission: non-captain roster members and admin are rejected with 403, captain succeeds', async () => {
+    const memberA2Token = generateToken(memberA2);
+
+    const match: Match = {
+      id: 'match-captain-score-auth',
+      tournamentId: tournament.id,
+      round: 1,
+      matchNumber: 1,
+      bracketPosition: 1,
+      teamAId: teamA.id,
+      teamBId: teamB.id,
+      teamAName: teamA.name,
+      teamBName: teamB.name,
+      isBye: false,
+      matchStatus: 'ACTIVE',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    db.data.matches.push(match);
+
+    // 1. Non-captain roster member GUI score submission -> 403
+    const guiMemberRes = await fetch(`${baseUrl}/api/matches/${match.id}/score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${memberA2Token}`
+      },
+      body: JSON.stringify({
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 5,
+        extractedCredits: 15000,
+        playersExtracted: 3,
+        objectiveCompleted: true
+      })
+    });
+    assert.equal(guiMemberRes.status, 403, 'Non-captain roster member GUI score submission must receive 403');
+    const guiMemberData = await guiMemberRes.json();
+    assert.match(guiMemberData.error, /captain/i);
+
+    // 2. Non-captain roster member /score chat command -> 403
+    const chatMemberRes = await fetch(`${baseUrl}/api/matches/${match.id}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${memberA2Token}`
+      },
+      body: JSON.stringify({
+        message: '/score run1 kills:5 loot:15000 survived:3 objective:yes'
+      })
+    });
+    assert.equal(chatMemberRes.status, 403, 'Non-captain roster member /score chat command must receive 403');
+    const chatMemberData = await chatMemberRes.json();
+    assert.match(chatMemberData.error, /captain/i);
+
+    // 3. Admin attempting normal player score endpoint -> 403
+    const adminPlayerRes = await fetch(`${baseUrl}/api/matches/${match.id}/score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 5,
+        extractedCredits: 15000,
+        playersExtracted: 3,
+        objectiveCompleted: true
+      })
+    });
+    assert.equal(adminPlayerRes.status, 403, 'Admin using regular player score endpoint must receive 403');
+    const adminPlayerData = await adminPlayerRes.json();
+    assert.match(adminPlayerData.error, /audit/i);
+
+    // 4. Team Captain official score submission succeeds
+    const captainRes = await fetch(`${baseUrl}/api/matches/${match.id}/score`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${captainAToken}`
+      },
+      body: JSON.stringify({
+        teamId: teamA.id,
+        runNumber: 1,
+        runnerKills: 5,
+        extractedCredits: 15000,
+        playersExtracted: 3,
+        objectiveCompleted: true
+      })
+    });
+    assert.equal(captainRes.status, 200, 'Designated Captain official score submission must succeed');
+    const captainData = await captainRes.json();
+    assert.equal(captainData.success, true);
+    assert.ok(captainData.submission);
   });
 });

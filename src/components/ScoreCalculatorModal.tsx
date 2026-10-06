@@ -11,7 +11,7 @@ interface ScoreCalculatorModalProps {
     playersExtracted: 0 | 1 | 2 | 3;
     objectiveCompleted: boolean;
     evidenceUrl?: string;
-  }) => Promise<void>;
+  }) => Promise<{ success: boolean; error?: string } | void>;
   defaultRunNumber?: 1 | 2;
   featuredObjectiveTitle?: string;
   featuredObjectivePoints?: number;
@@ -34,6 +34,7 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
   const [objectiveCompleted, setObjectiveCompleted] = useState<boolean>(true);
   const [evidenceUrl, setEvidenceUrl] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
 
   // Synchronized Live Calculation
   const calculation = useMemo(() => {
@@ -75,9 +76,10 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     setSubmitting(true);
     try {
-      await onSubmitScore({
+      const res = await onSubmitScore({
         runNumber,
         runnerKills,
         extractedCredits,
@@ -85,9 +87,14 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
         objectiveCompleted,
         evidenceUrl: evidenceUrl.trim() || undefined
       });
+      if (res && res.success === false) {
+        setError(res.error || 'Failed to submit score.');
+        return;
+      }
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Score submission error:', err);
+      setError(err?.message || 'Failed to submit score.');
     } finally {
       setSubmitting(false);
     }
