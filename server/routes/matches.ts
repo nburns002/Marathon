@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, optionalAuth } from '../middleware';
 import { calculateRunScore, parseScoreCommand } from '../scoring';
+import { calculateTournamentCurrentRound } from '../bracket';
 import { RunSubmission, MatchMessage, MatchEvidence, MatchDispute, AdminTicket } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 
@@ -116,8 +117,14 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  if (match.matchStatus !== 'READY_CHECK' && match.matchStatus !== 'WAITING_FOR_ROUND') {
-    return res.status(400).json({ error: `Cannot ready up. Match state is ${match.matchStatus}.` });
+  // Reject check-in if not currently in READY_CHECK
+  if (match.matchStatus !== 'READY_CHECK') {
+    return res.status(400).json({
+      error:
+        match.matchStatus === 'WAITING_FOR_ROUND'
+          ? 'Match is currently in round intermission. Captains cannot check in until the Ready Check window officially opens.'
+          : `Cannot ready up. Match state is ${match.matchStatus}.`
+    });
   }
 
   const teamA = match.teamAId ? db.data.teams.find((t) => t.id === match.teamAId) : null;
@@ -132,12 +139,6 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
   }
 
   const isoNow = new Date().toISOString();
-
-  // If match was in WAITING_FOR_ROUND, start READY_CHECK with 10 min window
-  if (match.matchStatus === 'WAITING_FOR_ROUND') {
-    match.matchStatus = 'READY_CHECK';
-    match.readyDeadlineAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  }
 
   let teamReadyName = '';
 
@@ -190,6 +191,14 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
       entityId: match.id,
       timestamp: isoNow
     });
+
+    const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+    if (tourn) {
+      tourn.currentRound = calculateTournamentCurrentRound(
+        db.data.matches.filter((m) => m.tournamentId === tourn.id),
+        tourn.currentRound || 1
+      );
+    }
   }
 
   match.updatedAt = isoNow;
@@ -529,20 +538,33 @@ router.post('/:id/flag-result', requireAuth, (req: AuthenticatedRequest, res: Re
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { runNumber, category, description, evidenceUrls } = req.body;
-  if (!description || !description.trim()) {
-    return res.status(400).json({ error: 'Please provide a detailed explanation of the scoring discrepancy.' });
+  // 1. Check matchStatus: cannot dispute already FINAL match or match not in RESULT_PENDING
+  if (match.matchStatus === 'FINAL') {
+    return res.status(400).json({ error: 'Cannot dispute: match is already finalized. Finalized matches cannot be disputed by captains.' });
+  }
+  if (match.matchStatus !== 'RESULT_PENDING') {
+    return res.status(400).json({ error: `Cannot dispute: match status is ${match.matchStatus}. Disputes are only permitted during RESULT_PENDING.` });
   }
 
+  // 2. disputeDeadlineAt must exist and current server time must be before disputeDeadlineAt
+  if (!match.disputeDeadlineAt || Date.now() >= new Date(match.disputeDeadlineAt).getTime()) {
+    return res.status(400).json({ error: 'Dispute window has expired. Match results are locked.' });
+  }
+
+  // 3. User must be captain of one of the two participating teams
   const teamA = match.teamAId ? db.data.teams.find((t) => t.id === match.teamAId) : null;
   const teamB = match.teamBId ? db.data.teams.find((t) => t.id === match.teamBId) : null;
 
   const isCaptainA = teamA?.captainUserId === user.id;
   const isCaptainB = teamB?.captainUserId === user.id;
-  const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
-  if (!isCaptainA && !isCaptainB && !isAdmin) {
-    return res.status(403).json({ error: 'Only the Team Captain may flag a match result.' });
+  if (!isCaptainA && !isCaptainB) {
+    return res.status(403).json({ error: 'Only the Team Captain of a participating team may flag a match result.' });
+  }
+
+  const { runNumber, category, description, evidenceUrls } = req.body;
+  if (!description || !description.trim()) {
+    return res.status(400).json({ error: 'Please provide a detailed explanation of the scoring discrepancy.' });
   }
 
   const requestingTeamId = isCaptainA ? match.teamAId! : match.teamBId!;

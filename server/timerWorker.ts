@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
-import { advanceMatchWinner } from './bracket';
+import { advanceMatchWinner, calculateTournamentCurrentRound } from './bracket';
 import { determineMatchWinner, calculateRunScore } from './scoring';
 
 export type EventBroadcaster = (eventType: string, data: any) => void;
@@ -71,6 +71,60 @@ export function processTimerWorkerTick() {
 
   // 2. Process Matches
   for (const match of db.data.matches) {
+    // 0. WAITING_FOR_ROUND Intermission Expiration -> Transition to READY_CHECK
+    if (
+      match.matchStatus === 'WAITING_FOR_ROUND' &&
+      match.teamAId &&
+      match.teamBId &&
+      match.intermissionDeadlineAt
+    ) {
+      const intermissionDeadlineMs = new Date(match.intermissionDeadlineAt).getTime();
+      if (nowMs >= intermissionDeadlineMs) {
+        const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+        const readyMinutes = tourn?.readyWindowMinutes || 10;
+        match.matchStatus = 'READY_CHECK';
+        match.readyDeadlineAt = new Date(nowMs + readyMinutes * 60 * 1000).toISOString();
+        match.intermissionDeadlineAt = null;
+        match.updatedAt = nowIso;
+        hasChanges = true;
+
+        db.data.matchMessages.push({
+          id: uuidv4(),
+          matchId: match.id,
+          userId: 'SYSTEM',
+          userName: 'SYSTEM',
+          userRole: 'SYSTEM',
+          type: 'SYSTEM',
+          message: `SYSTEM — Round Intermission has concluded. ${readyMinutes}-minute Captain Ready Check is now officially open for ${match.teamAName || 'Team A'} and ${match.teamBName || 'Team B'}. Captains, please check in!`,
+          createdAt: nowIso
+        });
+
+        db.data.auditLogs.push({
+          id: uuidv4(),
+          actorType: 'SYSTEM',
+          actorId: 'SYSTEM',
+          actorName: 'Tournament Engine',
+          action: 'INTERMISSION_EXPIRED_READY_CHECK_OPENED',
+          entityType: 'MATCH',
+          entityId: match.id,
+          metadata: {
+            readyDeadlineAt: match.readyDeadlineAt,
+            readyMinutes
+          },
+          timestamp: nowIso
+        });
+
+        if (tourn) {
+          tourn.currentRound = calculateTournamentCurrentRound(
+            db.data.matches.filter((m) => m.tournamentId === tourn.id),
+            tourn.currentRound || 1
+          );
+        }
+
+        broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
+      }
+    }
+
     // A. READY_CHECK Timeout
     if (match.matchStatus === 'READY_CHECK' && match.readyDeadlineAt) {
       const deadlineMs = new Date(match.readyDeadlineAt).getTime();
@@ -106,8 +160,23 @@ export function processTimerWorkerTick() {
             match.id,
             match.teamAId,
             teamLookup,
-            tourn?.roundIntermissionMinutes || 10
+            tourn?.roundIntermissionMinutes || 10,
+            'Opponent Ready Check Forfeit'
           );
+
+          if (advanceRes.auditEvent) {
+            db.data.auditLogs.push({
+              id: uuidv4(),
+              actorType: 'SYSTEM',
+              actorId: 'SYSTEM',
+              actorName: 'Tournament Engine',
+              action: advanceRes.auditEvent.action,
+              entityType: 'MATCH',
+              entityId: match.id,
+              metadata: advanceRes.auditEvent,
+              timestamp: advanceRes.auditEvent.timestamp
+            });
+          }
 
           if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
             if (tourn) {
@@ -116,6 +185,13 @@ export function processTimerWorkerTick() {
               tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
               tourn.updatedAt = nowIso;
             }
+          }
+
+          if (tourn) {
+            tourn.currentRound = calculateTournamentCurrentRound(
+              db.data.matches.filter((m) => m.tournamentId === tourn.id),
+              tourn.currentRound || 1
+            );
           }
 
           db.data.auditLogs.push({
@@ -159,8 +235,23 @@ export function processTimerWorkerTick() {
             match.id,
             match.teamBId,
             teamLookup,
-            tourn?.roundIntermissionMinutes || 10
+            tourn?.roundIntermissionMinutes || 10,
+            'Opponent Ready Check Forfeit'
           );
+
+          if (advanceRes.auditEvent) {
+            db.data.auditLogs.push({
+              id: uuidv4(),
+              actorType: 'SYSTEM',
+              actorId: 'SYSTEM',
+              actorName: 'Tournament Engine',
+              action: advanceRes.auditEvent.action,
+              entityType: 'MATCH',
+              entityId: match.id,
+              metadata: advanceRes.auditEvent,
+              timestamp: advanceRes.auditEvent.timestamp
+            });
+          }
 
           if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
             if (tourn) {
@@ -169,6 +260,13 @@ export function processTimerWorkerTick() {
               tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
               tourn.updatedAt = nowIso;
             }
+          }
+
+          if (tourn) {
+            tourn.currentRound = calculateTournamentCurrentRound(
+              db.data.matches.filter((m) => m.tournamentId === tourn.id),
+              tourn.currentRound || 1
+            );
           }
 
           db.data.auditLogs.push({
@@ -365,8 +463,23 @@ export function processTimerWorkerTick() {
               match.id,
               winnerResult.winnerTeamId,
               teamLookup,
-              tourn?.roundIntermissionMinutes || 10
+              tourn?.roundIntermissionMinutes || 10,
+              `Dispute Window Expired: ${winnerResult.reason}`
             );
+
+            if (advanceRes.auditEvent) {
+              db.data.auditLogs.push({
+                id: uuidv4(),
+                actorType: 'SYSTEM',
+                actorId: 'SYSTEM',
+                actorName: 'Tournament Engine',
+                action: advanceRes.auditEvent.action,
+                entityType: 'MATCH',
+                entityId: match.id,
+                metadata: advanceRes.auditEvent,
+                timestamp: advanceRes.auditEvent.timestamp
+              });
+            }
 
             if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
               if (tourn) {
@@ -387,6 +500,13 @@ export function processTimerWorkerTick() {
                   timestamp: nowIso
                 });
               }
+            }
+
+            if (tourn) {
+              tourn.currentRound = calculateTournamentCurrentRound(
+                db.data.matches.filter((m) => m.tournamentId === tourn.id),
+                tourn.currentRound || 1
+              );
             }
 
             db.data.auditLogs.push({

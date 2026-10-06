@@ -135,8 +135,20 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     const interval = setInterval(() => {
       if (!match) return;
 
+      // 0. Intermission Timer
+      if (match.matchStatus === 'WAITING_FOR_ROUND' && match.intermissionDeadlineAt) {
+        const diff = new Date(match.intermissionDeadlineAt).getTime() - Date.now();
+        if (diff <= 0) {
+          setTimeLeftStr('00:00 (Intermission Ending)');
+        } else {
+          const m = Math.floor(diff / 60000);
+          const s = Math.floor((diff % 60000) / 1000);
+          setTimeLeftStr(`${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`);
+        }
+      }
+
       // 1. Ready Check Timer
-      if (match.matchStatus === 'READY_CHECK' && match.readyDeadlineAt) {
+      else if (match.matchStatus === 'READY_CHECK' && match.readyDeadlineAt) {
         const diff = new Date(match.readyDeadlineAt).getTime() - Date.now();
         if (diff <= 0) {
           setTimeLeftStr('00:00 (EXPIRED)');
@@ -478,7 +490,9 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
             )}
 
             <div className="text-[10px] text-slate-400 font-mono mt-1">
-              {match.matchStatus === 'READY_CHECK'
+              {match.matchStatus === 'WAITING_FOR_ROUND' && match.intermissionDeadlineAt
+                ? 'Round Intermission — Ready Check Pending'
+                : match.matchStatus === 'READY_CHECK'
                 ? '10-Min Captain Check-In Window'
                 : match.matchStatus === 'RESULT_PENDING'
                 ? '10-Min Dispute Review Window'

@@ -41,7 +41,8 @@ export function shuffleArray<T>(array: T[]): T[] {
 export function generateSingleEliminationBracket(
   tournamentId: string,
   confirmedRegistrations: TournamentRegistration[],
-  teamLookup: Record<string, { name: string; logoUrl?: string }>
+  teamLookup: Record<string, { name: string; logoUrl?: string }>,
+  roundIntermissionMinutes = 10
 ): {
   bracket: Bracket;
   matches: Match[];
@@ -216,6 +217,15 @@ export function generateSingleEliminationBracket(
           nextMatch.teamBName = winningTeamName;
           nextMatch.teamBLogo = winningLogo;
         }
+
+        // When both entrants of a later-round match become known through BYEs:
+        // Set intermission and keep readyDeadlineAt null until intermission expires
+        if (nextMatch.teamAId && nextMatch.teamBId && nextMatch.matchStatus === 'WAITING_FOR_ROUND') {
+          const intermissionMs = (roundIntermissionMinutes || 10) * 60 * 1000;
+          nextMatch.intermissionDeadlineAt = new Date(Date.now() + intermissionMs).toISOString();
+          nextMatch.readyDeadlineAt = null;
+          nextMatch.updatedAt = now;
+        }
       }
     }
   }
@@ -237,74 +247,478 @@ export function generateSingleEliminationBracket(
 }
 
 /**
- * Propagates match winner forward into the next round match.
+ * Checks whether a downstream match has materially started.
+ * Downstream matches that have started playing, completed, or are in review cannot have their participants silently replaced.
+ */
+export function isDownstreamMatchMateriallyStarted(match: Match): boolean {
+  const startedStatuses: Match['matchStatus'][] = [
+    'ACTIVE',
+    'RUN_1_PARTIAL',
+    'RUN_1_COMPLETE',
+    'RESULT_PENDING',
+    'DISPUTED',
+    'ADMIN_REVIEW',
+    'FINAL',
+    'FORFEIT',
+    'DOUBLE_FORFEIT'
+  ];
+
+  if (startedStatuses.includes(match.matchStatus)) {
+    return true;
+  }
+  if (match.matchStartedAt) {
+    return true;
+  }
+  if (match.teamARun1 || match.teamBRun1 || match.teamARun2 || match.teamBRun2) {
+    return true;
+  }
+  return false;
+}
+
+export interface AdvancementAuditEvent {
+  action: 'MATCH_ADVANCED' | 'ADVANCEMENT_REVERSED' | 'ADVANCEMENT_CORRECTED';
+  sourceMatchId: string;
+  sourceRound: number;
+  winnerTeamId?: string | null;
+  previousWinnerTeamId?: string | null;
+  newWinnerTeamId?: string | null;
+  nextMatchId: string | null;
+  nextMatchSlot: 'A' | 'B' | null;
+  advancementReason?: string;
+  reversalReason?: string;
+  timestamp: string;
+}
+
+export interface ReconcileAdvancementResult {
+  success: boolean;
+  error?: string;
+  updatedMatches: Match[];
+  downstreamMatchId?: string | null;
+  auditEvent?: AdvancementAuditEvent;
+}
+
+/**
+ * Authoritative server-side reconciliation function for reversing or changing the winner
+ * of an already-advanced match.
+ */
+export function reconcileMatchAdvancement(
+  matches: Match[],
+  sourceMatch: Match,
+  previousWinnerTeamId: string | null,
+  newWinnerTeamId: string | null,
+  teamLookup: Record<string, { name: string; logoUrl?: string }>,
+  roundIntermissionMinutes = 10,
+  reason = 'Administrative reconciliation'
+): ReconcileAdvancementResult {
+  const nowIso = new Date().toISOString();
+
+  // If this was the championship match (no nextMatchId)
+  if (!sourceMatch.nextMatchId) {
+    return {
+      success: true,
+      updatedMatches: matches,
+      downstreamMatchId: null,
+      auditEvent: {
+        action: newWinnerTeamId ? 'ADVANCEMENT_CORRECTED' : 'ADVANCEMENT_REVERSED',
+        sourceMatchId: sourceMatch.id,
+        sourceRound: sourceMatch.round,
+        previousWinnerTeamId,
+        newWinnerTeamId,
+        nextMatchId: null,
+        nextMatchSlot: null,
+        reversalReason: reason,
+        timestamp: nowIso
+      }
+    };
+  }
+
+  const nextMatch = matches.find((m) => m.id === sourceMatch.nextMatchId);
+  if (!nextMatch) {
+    return {
+      success: true,
+      updatedMatches: matches,
+      downstreamMatchId: null
+    };
+  }
+
+  const slot = sourceMatch.nextMatchSlot;
+  if (!slot) {
+    return {
+      success: false,
+      error: `Source match ${sourceMatch.id} has nextMatchId but no nextMatchSlot.`,
+      updatedMatches: matches
+    };
+  }
+
+  // Reject if downstream match is already materially started
+  if (isDownstreamMatchMateriallyStarted(nextMatch)) {
+    return {
+      success: false,
+      error: `Cannot reverse or change winner: downstream match ${nextMatch.id} (Round ${nextMatch.round}) is already in progress (${nextMatch.matchStatus}). Explicit high-risk bracket rollback required.`,
+      updatedMatches: matches,
+      downstreamMatchId: nextMatch.id
+    };
+  }
+
+  const currentSlotOccupant = slot === 'A' ? nextMatch.teamAId : nextMatch.teamBId;
+
+  // Case 1: Winner cleared (e.g. reverse forfeit)
+  if (!newWinnerTeamId) {
+    if (slot === 'A') {
+      nextMatch.teamAId = null;
+      nextMatch.teamAName = null;
+      nextMatch.teamALogo = null;
+      nextMatch.teamAReady = false;
+      nextMatch.teamAReadyAt = null;
+    } else {
+      nextMatch.teamBId = null;
+      nextMatch.teamBName = null;
+      nextMatch.teamBLogo = null;
+      nextMatch.teamBReady = false;
+      nextMatch.teamBReadyAt = null;
+    }
+
+    // Downstream match is now missing a participant -> reset to WAITING_FOR_ROUND
+    nextMatch.matchStatus = 'WAITING_FOR_ROUND';
+    nextMatch.intermissionDeadlineAt = null;
+    nextMatch.readyDeadlineAt = null;
+    nextMatch.teamAReady = false;
+    nextMatch.teamBReady = false;
+    nextMatch.updatedAt = nowIso;
+
+    return {
+      success: true,
+      updatedMatches: matches,
+      downstreamMatchId: nextMatch.id,
+      auditEvent: {
+        action: 'ADVANCEMENT_REVERSED',
+        sourceMatchId: sourceMatch.id,
+        sourceRound: sourceMatch.round,
+        previousWinnerTeamId,
+        newWinnerTeamId: null,
+        nextMatchId: nextMatch.id,
+        nextMatchSlot: slot,
+        reversalReason: reason,
+        timestamp: nowIso
+      }
+    };
+  }
+
+  // Case 2: Winner changed
+  // Bracket integrity conflict check:
+  if (currentSlotOccupant && currentSlotOccupant !== previousWinnerTeamId && currentSlotOccupant !== newWinnerTeamId) {
+    return {
+      success: false,
+      error: `Bracket integrity conflict: downstream slot ${slot} in match ${nextMatch.id} is occupied by team ${currentSlotOccupant}, not previous winner ${previousWinnerTeamId}.`,
+      updatedMatches: matches,
+      downstreamMatchId: nextMatch.id
+    };
+  }
+
+  const winnerInfo = teamLookup[newWinnerTeamId] || {
+    name: sourceMatch.teamAId === newWinnerTeamId ? (sourceMatch.teamAName || 'Winner') : (sourceMatch.teamBName || 'Winner')
+  };
+
+  if (slot === 'A') {
+    nextMatch.teamAId = newWinnerTeamId;
+    nextMatch.teamAName = winnerInfo.name;
+    nextMatch.teamALogo = winnerInfo.logoUrl || null;
+    nextMatch.teamAReady = false;
+    nextMatch.teamAReadyAt = null;
+  } else {
+    nextMatch.teamBId = newWinnerTeamId;
+    nextMatch.teamBName = winnerInfo.name;
+    nextMatch.teamBLogo = winnerInfo.logoUrl || null;
+    nextMatch.teamBReady = false;
+    nextMatch.teamBReadyAt = null;
+  }
+
+  // If both slots now populated, enter intermission (do NOT set ready deadline yet)
+  if (nextMatch.teamAId && nextMatch.teamBId) {
+    nextMatch.matchStatus = 'WAITING_FOR_ROUND';
+    const intermissionMs = (roundIntermissionMinutes || 10) * 60 * 1000;
+    nextMatch.intermissionDeadlineAt = new Date(Date.now() + intermissionMs).toISOString();
+    nextMatch.readyDeadlineAt = null;
+    nextMatch.teamAReady = false;
+    nextMatch.teamBReady = false;
+  } else {
+    nextMatch.matchStatus = 'WAITING_FOR_ROUND';
+    nextMatch.intermissionDeadlineAt = null;
+    nextMatch.readyDeadlineAt = null;
+  }
+
+  nextMatch.updatedAt = nowIso;
+
+  return {
+    success: true,
+    updatedMatches: matches,
+    downstreamMatchId: nextMatch.id,
+    auditEvent: {
+      action: 'ADVANCEMENT_CORRECTED',
+      sourceMatchId: sourceMatch.id,
+      sourceRound: sourceMatch.round,
+      previousWinnerTeamId,
+      newWinnerTeamId,
+      nextMatchId: nextMatch.id,
+      nextMatchSlot: slot,
+      reversalReason: reason,
+      timestamp: nowIso
+    }
+  };
+}
+
+export interface AdvanceMatchWinnerResult {
+  success: boolean;
+  error?: string;
+  updatedMatches: Match[];
+  advancedToMatchId: string | null;
+  isTournamentComplete: boolean;
+  championTeamId: string | null;
+  auditEvent?: AdvancementAuditEvent;
+}
+
+/**
+ * Authoritatively advances match winner forward into the next round match.
+ * Enforces idempotency, bracket integrity validation, intermission setup, and audit events.
  */
 export function advanceMatchWinner(
   matches: Match[],
   completedMatchId: string,
   winnerTeamId: string,
   teamLookup: Record<string, { name: string; logoUrl?: string }>,
-  roundIntermissionMinutes = 10
-): {
-  updatedMatches: Match[];
-  advancedToMatchId: string | null;
-  isTournamentComplete: boolean;
-  championTeamId: string | null;
-} {
+  roundIntermissionMinutes = 10,
+  advancementReason = 'Match finalized'
+): AdvanceMatchWinnerResult {
   const matchIndex = matches.findIndex((m) => m.id === completedMatchId);
   if (matchIndex === -1) {
-    return { updatedMatches: matches, advancedToMatchId: null, isTournamentComplete: false, championTeamId: null };
-  }
-
-  const completedMatch = matches[matchIndex];
-  completedMatch.winnerTeamId = winnerTeamId;
-  completedMatch.loserTeamId = completedMatch.teamAId === winnerTeamId ? completedMatch.teamBId : completedMatch.teamAId;
-  completedMatch.matchStatus = 'FINAL';
-  completedMatch.updatedAt = new Date().toISOString();
-
-  // If this was the championship match (no nextMatchId)
-  if (!completedMatch.nextMatchId) {
     return {
+      success: false,
+      error: `Match with ID ${completedMatchId} not found.`,
       updatedMatches: matches,
       advancedToMatchId: null,
-      isTournamentComplete: true,
-      championTeamId: winnerTeamId
+      isTournamentComplete: false,
+      championTeamId: null
     };
   }
 
-  const nextMatchIndex = matches.findIndex((m) => m.id === completedMatch.nextMatchId);
-  if (nextMatchIndex === -1) {
-    return { updatedMatches: matches, advancedToMatchId: null, isTournamentComplete: false, championTeamId: null };
+  const completedMatch = matches[matchIndex];
+  const nowIso = new Date().toISOString();
+
+  // Validate that winnerTeamId is actually one of the match participants
+  if (completedMatch.teamAId !== winnerTeamId && completedMatch.teamBId !== winnerTeamId) {
+    return {
+      success: false,
+      error: `Team ${winnerTeamId} is not a participant in match ${completedMatchId} (Team A: ${completedMatch.teamAId}, Team B: ${completedMatch.teamBId}).`,
+      updatedMatches: matches,
+      advancedToMatchId: null,
+      isTournamentComplete: false,
+      championTeamId: null
+    };
   }
 
-  const nextMatch = matches[nextMatchIndex];
+  // Idempotency check:
+  // If already final or forfeit with this winner
+  if ((completedMatch.matchStatus === 'FINAL' || completedMatch.matchStatus === 'FORFEIT') && completedMatch.winnerTeamId === winnerTeamId) {
+    if (!completedMatch.nextMatchId) {
+      return {
+        success: true,
+        updatedMatches: matches,
+        advancedToMatchId: null,
+        isTournamentComplete: true,
+        championTeamId: winnerTeamId
+      };
+    }
+    const nextMatch = matches.find((m) => m.id === completedMatch.nextMatchId);
+    if (nextMatch) {
+      const currentSlot = completedMatch.nextMatchSlot === 'A' ? nextMatch.teamAId : nextMatch.teamBId;
+      if (currentSlot === winnerTeamId) {
+        // Idempotent call: already advanced to this slot!
+        return {
+          success: true,
+          updatedMatches: matches,
+          advancedToMatchId: nextMatch.id,
+          isTournamentComplete: false,
+          championTeamId: null
+        };
+      }
+    }
+  }
+
+  // Championship match (no nextMatchId)
+  if (!completedMatch.nextMatchId) {
+    completedMatch.winnerTeamId = winnerTeamId;
+    completedMatch.loserTeamId = completedMatch.teamAId === winnerTeamId ? completedMatch.teamBId : completedMatch.teamAId;
+    if (completedMatch.matchStatus !== 'FORFEIT') {
+      completedMatch.matchStatus = 'FINAL';
+    }
+    completedMatch.updatedAt = nowIso;
+
+    return {
+      success: true,
+      updatedMatches: matches,
+      advancedToMatchId: null,
+      isTournamentComplete: true,
+      championTeamId: winnerTeamId,
+      auditEvent: {
+        action: 'MATCH_ADVANCED',
+        sourceMatchId: completedMatch.id,
+        sourceRound: completedMatch.round,
+        winnerTeamId,
+        nextMatchId: null,
+        nextMatchSlot: null,
+        advancementReason: `${advancementReason} (Championship Final)`,
+        timestamp: nowIso
+      }
+    };
+  }
+
+  const nextMatch = matches.find((m) => m.id === completedMatch.nextMatchId);
+  if (!nextMatch) {
+    return {
+      success: false,
+      error: `Downstream match ${completedMatch.nextMatchId} not found.`,
+      updatedMatches: matches,
+      advancedToMatchId: null,
+      isTournamentComplete: false,
+      championTeamId: null
+    };
+  }
+
+  const slot = completedMatch.nextMatchSlot;
+  if (!slot) {
+    return {
+      success: false,
+      error: `Match ${completedMatch.id} does not have nextMatchSlot specified.`,
+      updatedMatches: matches,
+      advancedToMatchId: null,
+      isTournamentComplete: false,
+      championTeamId: null
+    };
+  }
+
+  // Bracket integrity check:
+  // If slot in downstream match is occupied by a DIFFERENT team (not null and not winnerTeamId),
+  // reject rather than silently overwriting!
+  const existingSlotTeamId = slot === 'A' ? nextMatch.teamAId : nextMatch.teamBId;
+  if (existingSlotTeamId && existingSlotTeamId !== winnerTeamId && existingSlotTeamId !== completedMatch.winnerTeamId) {
+    return {
+      success: false,
+      error: `Bracket integrity conflict: downstream slot ${slot} in match ${nextMatch.id} is already occupied by team ${existingSlotTeamId}.`,
+      updatedMatches: matches,
+      advancedToMatchId: null,
+      isTournamentComplete: false,
+      championTeamId: null
+    };
+  }
+
+  // Reject if downstream match is materially started with an old team
+  if (existingSlotTeamId !== winnerTeamId && isDownstreamMatchMateriallyStarted(nextMatch)) {
+    return {
+      success: false,
+      error: `Cannot advance team: downstream match ${nextMatch.id} is already in progress (${nextMatch.matchStatus}). Explicit high-risk bracket rollback required.`,
+      updatedMatches: matches,
+      advancedToMatchId: null,
+      isTournamentComplete: false,
+      championTeamId: null
+    };
+  }
+
+  // Authoritatively update source match
+  completedMatch.winnerTeamId = winnerTeamId;
+  completedMatch.loserTeamId = completedMatch.teamAId === winnerTeamId ? completedMatch.teamBId : completedMatch.teamAId;
+  if (completedMatch.matchStatus !== 'FORFEIT') {
+    completedMatch.matchStatus = 'FINAL';
+  }
+  completedMatch.updatedAt = nowIso;
+
+  // Propagate to downstream match
   const winnerInfo = teamLookup[winnerTeamId] || {
     name: completedMatch.teamAId === winnerTeamId ? (completedMatch.teamAName || 'Winner') : (completedMatch.teamBName || 'Winner')
   };
 
-  if (completedMatch.nextMatchSlot === 'A') {
+  if (slot === 'A') {
     nextMatch.teamAId = winnerTeamId;
     nextMatch.teamAName = winnerInfo.name;
     nextMatch.teamALogo = winnerInfo.logoUrl || null;
+    nextMatch.teamAReady = false;
+    nextMatch.teamAReadyAt = null;
   } else {
     nextMatch.teamBId = winnerTeamId;
     nextMatch.teamBName = winnerInfo.name;
     nextMatch.teamBLogo = winnerInfo.logoUrl || null;
+    nextMatch.teamBReady = false;
+    nextMatch.teamBReadyAt = null;
   }
 
-  // If next match now has both teams, set intermission or ready check
+  // If next match now has both teams, enter round intermission
+  // Do NOT set readyDeadlineAt until intermission actually expires!
   if (nextMatch.teamAId && nextMatch.teamBId && nextMatch.matchStatus === 'WAITING_FOR_ROUND') {
-    const nowMs = Date.now();
     const intermissionMs = (roundIntermissionMinutes || 10) * 60 * 1000;
-    nextMatch.intermissionDeadlineAt = new Date(nowMs + intermissionMs).toISOString();
-    nextMatch.readyDeadlineAt = new Date(nowMs + intermissionMs + 10 * 60 * 1000).toISOString();
-    nextMatch.updatedAt = new Date().toISOString();
+    nextMatch.intermissionDeadlineAt = new Date(Date.now() + intermissionMs).toISOString();
+    nextMatch.readyDeadlineAt = null; // Stays null during intermission
+    nextMatch.teamAReady = false;
+    nextMatch.teamBReady = false;
   }
+
+  nextMatch.updatedAt = nowIso;
 
   return {
+    success: true,
     updatedMatches: matches,
     advancedToMatchId: nextMatch.id,
     isTournamentComplete: false,
-    championTeamId: null
+    championTeamId: null,
+    auditEvent: {
+      action: 'MATCH_ADVANCED',
+      sourceMatchId: completedMatch.id,
+      sourceRound: completedMatch.round,
+      winnerTeamId,
+      nextMatchId: nextMatch.id,
+      nextMatchSlot: slot,
+      advancementReason,
+      timestamp: nowIso
+    }
   };
 }
+
+/**
+ * Authoritatively calculates the tournament's current round based on bracket progression.
+ * Returns the highest round with an active, ready, or pending match, or the final round if completed.
+ */
+export function calculateTournamentCurrentRound(matches: Match[], defaultRound = 1): number {
+  const inProgressStatuses: Match['matchStatus'][] = [
+    'READY_CHECK',
+    'ACTIVE',
+    'RUN_1_PARTIAL',
+    'RUN_1_COMPLETE',
+    'RESULT_PENDING',
+    'DISPUTED',
+    'ADMIN_REVIEW'
+  ];
+
+  const activeMatches = matches.filter((m) => {
+    if (m.isBye) return false;
+    if (inProgressStatuses.includes(m.matchStatus)) return true;
+    // Populated WAITING_FOR_ROUND matches in intermission
+    if (m.matchStatus === 'WAITING_FOR_ROUND' && m.teamAId && m.teamBId) return true;
+    return false;
+  });
+
+  if (activeMatches.length > 0) {
+    return Math.max(...activeMatches.map((m) => m.round));
+  }
+
+  // If no live matches, check if tournament is completely finished
+  const nonByeMatches = matches.filter((m) => !m.isBye);
+  if (nonByeMatches.length > 0) {
+    const allDone = nonByeMatches.every((m) =>
+      ['FINAL', 'FORFEIT', 'DOUBLE_FORFEIT', 'CANCELLED'].includes(m.matchStatus)
+    );
+    if (allDone) {
+      return Math.max(...nonByeMatches.map((m) => m.round));
+    }
+  }
+
+  return defaultRound;
+}
+

@@ -2,8 +2,8 @@ import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, requireAdmin } from '../middleware';
-import { calculateRunScore } from '../scoring';
-import { advanceMatchWinner } from '../bracket';
+import { calculateRunScore, determineMatchWinner } from '../scoring';
+import { advanceMatchWinner, reconcileMatchAdvancement, calculateTournamentCurrentRound } from '../bracket';
 import { AdminAction, AuditLog } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 
@@ -216,17 +216,110 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     : (runNum === 1 ? match.teamBRun1 : match.teamBRun2);
 
   const oldScoreStr = targetSub ? `${targetSub.finalRunScore} pts` : '0 pts';
+  const targetSubBackup = targetSub ? { ...targetSub } : null;
+  const prevFinalScoreA = match.finalScoreA;
+  const prevFinalScoreB = match.finalScoreB;
 
   if (targetSub) {
     Object.assign(targetSub, {
       ...calculated,
-      submittedByName: `${targetSub.submittedByName} (Overridden by ${admin.displayName})`
+      submittedByName: `${targetSub.submittedByName} (Overridden by ${admin.displayName || admin.username})`
     });
   }
 
-  match.finalScoreA = Number(((match.teamARun1?.finalRunScore || 0) + (match.teamARun2?.finalRunScore || 0)).toFixed(2));
-  match.finalScoreB = Number(((match.teamBRun1?.finalRunScore || 0) + (match.teamBRun2?.finalRunScore || 0)).toFixed(2));
+  const newScoreA = Number(((match.teamARun1?.finalRunScore || 0) + (match.teamARun2?.finalRunScore || 0)).toFixed(2));
+  const newScoreB = Number(((match.teamBRun1?.finalRunScore || 0) + (match.teamBRun2?.finalRunScore || 0)).toFixed(2));
+  match.finalScoreA = newScoreA;
+  match.finalScoreB = newScoreB;
   match.updatedAt = isoNow;
+
+  const teamLookup: Record<string, { name: string; logoUrl?: string }> = {};
+  db.data.teams.forEach((t) => {
+    teamLookup[t.id] = { name: t.name, logoUrl: t.logoUrl };
+  });
+
+  // Authoritatively recompute winner if match was completed/finalized or had an established winner
+  if (match.teamAId && match.teamBId && (match.matchStatus === 'FINAL' || match.winnerTeamId || (match.teamARun1 && match.teamBRun1))) {
+    const teamAData = {
+      teamId: match.teamAId,
+      run1: match.teamARun1,
+      run2: match.teamARun2
+    };
+    const teamBData = {
+      teamId: match.teamBId,
+      run1: match.teamBRun1,
+      run2: match.teamBRun2
+    };
+
+    const recomputed = determineMatchWinner(teamAData, teamBData);
+    const previousWinnerId = match.winnerTeamId;
+    const newWinnerId = recomputed.isTied ? null : recomputed.winnerTeamId;
+
+    if (previousWinnerId && newWinnerId !== previousWinnerId) {
+      const reconcileRes = reconcileMatchAdvancement(
+        db.data.matches,
+        match,
+        previousWinnerId,
+        newWinnerId,
+        teamLookup,
+        tournament?.roundIntermissionMinutes || 10,
+        `Score override: ${reason}`
+      );
+
+      if (!reconcileRes.success) {
+        // Rollback score change to prevent data inconsistency
+        if (targetSub && targetSubBackup) {
+          Object.assign(targetSub, targetSubBackup);
+        }
+        match.finalScoreA = prevFinalScoreA;
+        match.finalScoreB = prevFinalScoreB;
+        return res.status(400).json({ error: reconcileRes.error });
+      }
+
+      if (reconcileRes.auditEvent) {
+        db.data.auditLogs.push({
+          id: uuidv4(),
+          actorType: 'ADMIN',
+          actorId: admin.id,
+          actorName: admin.displayName || admin.username,
+          action: reconcileRes.auditEvent.action,
+          entityType: 'MATCH',
+          entityId: match.id,
+          metadata: reconcileRes.auditEvent,
+          timestamp: isoNow
+        });
+      }
+
+      if (newWinnerId) {
+        match.winnerTeamId = newWinnerId;
+        match.loserTeamId = newWinnerId === match.teamAId ? match.teamBId : match.teamAId;
+        if (!match.nextMatchId && tournament) {
+          tournament.championTeamId = newWinnerId;
+          tournament.championTeamName = teamLookup[newWinnerId]?.name;
+        }
+      } else {
+        match.winnerTeamId = null;
+        match.loserTeamId = null;
+        match.matchStatus = 'ADMIN_REVIEW';
+        match.adminNotes = 'Tie detected across all metrics following score correction. Tiebreaker run required.';
+        if (!match.nextMatchId && tournament) {
+          tournament.championTeamId = null;
+          tournament.championTeamName = null;
+          tournament.status = 'LIVE';
+        }
+      }
+    } else if (newWinnerId && previousWinnerId === newWinnerId) {
+      match.winnerTeamId = newWinnerId;
+      match.loserTeamId = newWinnerId === match.teamAId ? match.teamBId : match.teamAId;
+    }
+  }
+
+  if (tournament) {
+    tournament.currentRound = calculateTournamentCurrentRound(
+      db.data.matches.filter((m) => m.tournamentId === tournament.id),
+      tournament.currentRound || 1
+    );
+  }
 
   const targetTeamName = isSlotA ? match.teamAName : match.teamBName;
 
@@ -316,11 +409,64 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
       createdAt: isoNow
     });
   } else if (action === 'REVERSE_FORFEIT') {
+    if (match.matchStatus !== 'FORFEIT') {
+      return res.status(400).json({ error: `Cannot reverse forfeit: match is in ${match.matchStatus} state, not FORFEIT.` });
+    }
+
+    const previousWinnerTeamId = match.winnerTeamId;
+    const teamLookup: Record<string, { name: string; logoUrl?: string }> = {};
+    db.data.teams.forEach((t) => {
+      teamLookup[t.id] = { name: t.name, logoUrl: t.logoUrl };
+    });
+
+    const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+
+    // Safely reconcile downstream bracket before reopening match
+    const reconcileRes = reconcileMatchAdvancement(
+      db.data.matches,
+      match,
+      previousWinnerTeamId,
+      null,
+      teamLookup,
+      tourn?.roundIntermissionMinutes || 10,
+      reason || 'Admin reverse forfeit'
+    );
+
+    if (!reconcileRes.success) {
+      return res.status(400).json({ error: reconcileRes.error });
+    }
+
+    if (reconcileRes.auditEvent) {
+      db.data.auditLogs.push({
+        id: uuidv4(),
+        actorType: 'ADMIN',
+        actorId: admin.id,
+        actorName: admin.displayName || admin.username,
+        action: reconcileRes.auditEvent.action,
+        entityType: 'MATCH',
+        entityId: match.id,
+        metadata: reconcileRes.auditEvent,
+        timestamp: isoNow
+      });
+    }
+
     match.matchStatus = 'ACTIVE';
     match.winnerTeamId = null;
     match.loserTeamId = null;
     match.forfeitReason = null;
-    match.matchDeadlineAt = new Date(Date.now() + 75 * 60 * 1000).toISOString();
+    match.matchDeadlineAt = new Date(Date.now() + (tourn?.matchWindowMinutes || 75) * 60 * 1000).toISOString();
+
+    if (tourn) {
+      if (tourn.championTeamId === previousWinnerTeamId) {
+        tourn.championTeamId = null;
+        tourn.championTeamName = null;
+        tourn.status = 'LIVE';
+      }
+      tourn.currentRound = calculateTournamentCurrentRound(
+        db.data.matches.filter((m) => m.tournamentId === tourn.id),
+        tourn.currentRound || 1
+      );
+    }
 
     db.data.matchMessages.push({
       id: uuidv4(),
@@ -329,7 +475,7 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
       userName: admin.displayName || admin.username,
       userRole: 'ADMIN',
       type: 'ADMIN',
-      message: `ADMIN ACTION: Forfeit reversed by Administrator.${reason ? ` Reason: ${reason}` : ''} Match resumed.`,
+      message: `ADMIN ACTION: Forfeit reversed by Administrator.${reason ? ` Reason: ${reason}` : ''} Downstream participant cleared and match resumed.`,
       createdAt: isoNow
     });
   }
@@ -363,8 +509,15 @@ router.post('/matches/:id/override-winner', requireAuth, requireAdmin, (req: Aut
   }
 
   const { winnerTeamId, reason } = req.body;
-  if (!winnerTeamId || !reason) {
+  if (!winnerTeamId || !reason || !reason.trim()) {
     return res.status(400).json({ error: 'Winner team ID and written reason are required.' });
+  }
+
+  // Validate that winnerTeamId is one of match.teamAId or match.teamBId
+  if (winnerTeamId !== match.teamAId && winnerTeamId !== match.teamBId) {
+    return res.status(400).json({
+      error: `Invalid winner team ID '${winnerTeamId}'. Winner must be either Team A (${match.teamAId}) or Team B (${match.teamBId}).`
+    });
   }
 
   const winningTeamName = winnerTeamId === match.teamAId ? match.teamAName : match.teamBName;
@@ -375,20 +528,73 @@ router.post('/matches/:id/override-winner', requireAuth, requireAdmin, (req: Aut
     teamLookup[t.id] = { name: t.name, logoUrl: t.logoUrl };
   });
 
-  match.matchStatus = 'FINAL';
-  match.winnerTeamId = winnerTeamId;
-  match.loserTeamId = winnerTeamId === match.teamAId ? match.teamBId : match.teamAId;
-  match.adminNotes = `Winner manually declared by Admin: ${reason}`;
-  match.updatedAt = isoNow;
-
   const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
+  const previousWinnerTeamId = match.winnerTeamId;
+
+  // If winner is changing from an already-established winner
+  if (previousWinnerTeamId && previousWinnerTeamId !== winnerTeamId) {
+    const reconcileRes = reconcileMatchAdvancement(
+      db.data.matches,
+      match,
+      previousWinnerTeamId,
+      winnerTeamId,
+      teamLookup,
+      tourn?.roundIntermissionMinutes || 10,
+      `Admin winner override: ${reason}`
+    );
+
+    if (!reconcileRes.success) {
+      return res.status(400).json({ error: reconcileRes.error });
+    }
+
+    if (reconcileRes.auditEvent) {
+      db.data.auditLogs.push({
+        id: uuidv4(),
+        actorType: 'ADMIN',
+        actorId: admin.id,
+        actorName: admin.displayName || admin.username,
+        action: reconcileRes.auditEvent.action,
+        entityType: 'MATCH',
+        entityId: match.id,
+        metadata: reconcileRes.auditEvent,
+        timestamp: isoNow
+      });
+    }
+  }
+
+  // Advance winner
   const advanceRes = advanceMatchWinner(
     db.data.matches,
     match.id,
     winnerTeamId,
     teamLookup,
-    tourn?.roundIntermissionMinutes || 10
+    tourn?.roundIntermissionMinutes || 10,
+    `Admin Override: ${reason}`
   );
+
+  if (!advanceRes.success) {
+    return res.status(400).json({ error: advanceRes.error });
+  }
+
+  if (advanceRes.auditEvent) {
+    db.data.auditLogs.push({
+      id: uuidv4(),
+      actorType: 'ADMIN',
+      actorId: admin.id,
+      actorName: admin.displayName || admin.username,
+      action: advanceRes.auditEvent.action,
+      entityType: 'MATCH',
+      entityId: match.id,
+      metadata: advanceRes.auditEvent,
+      timestamp: isoNow
+    });
+  }
+
+  match.matchStatus = 'FINAL';
+  match.winnerTeamId = winnerTeamId;
+  match.loserTeamId = winnerTeamId === match.teamAId ? match.teamBId : match.teamAId;
+  match.adminNotes = `Winner manually declared by Admin: ${reason}`;
+  match.updatedAt = isoNow;
 
   if (advanceRes.isTournamentComplete && advanceRes.championTeamId) {
     if (tourn) {
@@ -397,6 +603,13 @@ router.post('/matches/:id/override-winner', requireAuth, requireAdmin, (req: Aut
       tourn.championTeamName = teamLookup[advanceRes.championTeamId]?.name;
       tourn.updatedAt = isoNow;
     }
+  }
+
+  if (tourn) {
+    tourn.currentRound = calculateTournamentCurrentRound(
+      db.data.matches.filter((m) => m.tournamentId === tourn.id),
+      tourn.currentRound || 1
+    );
   }
 
   db.data.adminActions.push({

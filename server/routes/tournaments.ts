@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, requireAdmin } from '../middleware';
-import { generateSingleEliminationBracket } from '../bracket';
+import { generateSingleEliminationBracket, calculateTournamentCurrentRound } from '../bracket';
 import { Tournament, TournamentRegistration, TournamentRosterMember } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 
@@ -276,7 +276,8 @@ router.post('/:id/lock-and-generate-bracket', requireAuth, requireAdmin, (req: A
   const { bracket, matches, seedAudit } = generateSingleEliminationBracket(
     tournament.id,
     confirmedRegistrations,
-    teamLookup
+    teamLookup,
+    tournament.roundIntermissionMinutes || 10
   );
 
   // Initialize Round 1 ready check for all valid matchups
@@ -294,7 +295,7 @@ router.post('/:id/lock-and-generate-bracket', requireAuth, requireAdmin, (req: A
   db.data.matches.push(...matches);
 
   tournament.status = 'LIVE';
-  tournament.currentRound = 1;
+  tournament.currentRound = calculateTournamentCurrentRound(matches, 1);
   tournament.updatedAt = isoNow;
 
   db.data.auditLogs.push({
