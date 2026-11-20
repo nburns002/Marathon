@@ -204,7 +204,7 @@ function applyAuthoritativeAdminScoreCorrection(params: {
         match.winnerTeamId = null;
         match.loserTeamId = null;
         match.matchStatus = 'ADMIN_REVIEW';
-        match.adminNotes = 'Tie detected across all metrics following score correction. Tiebreaker run required.';
+        match.adminNotes = 'Tie detected across all metrics following score correction. Referee ruling required.';
         if (!match.nextMatchId && tournament) {
           tournament.championTeamId = null;
           tournament.championTeamName = null;

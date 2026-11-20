@@ -870,7 +870,7 @@ describe('User Requests & Defect Resolution Suite', () => {
   });
 });
 
-for (const scenario of ['normal', 'dispute correction', 'no-show reversal'] as const) {
+for (const scenario of ['normal', 'dispute correction', 'no-show reversal', 'correction to a tie'] as const) {
   test(`three-team tournament reaches a persisted championship: ${scenario}`, async () => {
     const teamC: Team = { ...teamA, id: 'team-c', name: 'Team C', captainUserId: outsiderUser.id };
     const playersC = [outsiderUser, ...[1, 2].map((index): UserRecord => ({
@@ -1010,6 +1010,26 @@ for (const scenario of ['normal', 'dispute correction', 'no-show reversal'] as c
     const final = db.data.matches.find((match) => match.round === 2)!;
     assert.deepEqual(new Set([final.teamAId, final.teamBId]), new Set([qualifier, bye.winnerTeamId]));
     assert.equal(final.matchStatus, 'WAITING_FOR_ROUND');
+    if (scenario === 'correction to a tie') {
+      const route = `/api/admin/matches/${semifinal.id}`;
+      for (const runNumber of [1, 2]) {
+        const correction = await post(`${route}/override-score`, adminToken, {
+          teamId: semifinal.teamBId, runNumber, runnerKills: 6, extractedCredits: 3000,
+          playersExtracted: 3, objectiveCompleted: false, reason: 'Referee verified the equal kill count.'
+        });
+        assert.equal(correction.status, 200);
+      }
+      const reviewed = db.data.matches.find((match) => match.id === semifinal.id)!;
+      assert.equal(reviewed.matchStatus, 'ADMIN_REVIEW');
+      assert.equal(reviewed.winnerTeamId, null);
+      assert.ok(![final.teamAId, final.teamBId].includes(qualifier));
+      const ruling = await post(`${route}/override-winner`, adminToken, {
+        winnerTeamId: qualifier, reason: 'Referee decision after reviewing both VODs.'
+      });
+      assert.equal(ruling.status, 200);
+      assert.equal(reviewed.matchStatus, 'FINAL');
+      assert.ok([final.teamAId, final.teamBId].includes(qualifier));
+    }
     final.intermissionDeadlineAt = new Date(Date.now() - 1000).toISOString();
     processTimerWorkerTick();
     assert.equal(final.matchStatus, 'READY_CHECK');

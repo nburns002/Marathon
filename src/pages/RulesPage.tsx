@@ -206,6 +206,9 @@ export const RulesPage: React.FC = () => {
             <strong className="text-amber-300">5. Featured Objective Total:</strong> Highest number of completed featured objectives.
           </li>
         </ol>
+        <p className="text-xs text-slate-400">
+          If all five tiebreakers are equal, the match pauses for a referee ruling. Each team still has exactly two scored runs.
+        </p>
       </section>
 
       {/* Section 4: Public Lobby Competitive Integrity */}

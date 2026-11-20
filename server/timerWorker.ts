@@ -544,7 +544,7 @@ export function processTimerWorkerTick() {
 
           if (winnerResult.isTied) {
             match.matchStatus = 'ADMIN_REVIEW';
-            match.adminNotes = 'Tie detected across all tiebreakers. Admin tiebreaker run required.';
+            match.adminNotes = 'Tie detected across all tiebreakers. Referee ruling required.';
             match.updatedAt = nowIso;
             hasChanges = true;
 
@@ -555,7 +555,7 @@ export function processTimerWorkerTick() {
               requestingUserId: 'SYSTEM',
               requestingUserName: 'SYSTEM',
               category: 'DEAD HEAT TIE',
-              description: `Match between ${match.teamAName} and ${match.teamBName} resulted in identical scores and tiebreaker metrics. Authorize tiebreaker run.`,
+              description: `Match between ${match.teamAName} and ${match.teamBName} resulted in identical scores and tiebreaker metrics. A referee must issue a ruling.`,
               status: 'OPEN',
               createdAt: nowIso,
               updatedAt: nowIso
@@ -568,7 +568,7 @@ export function processTimerWorkerTick() {
               userName: 'SYSTEM',
               userRole: 'SYSTEM',
               type: 'SYSTEM',
-              message: 'SYSTEM — Complete tie detected. Administrator summoned to authorize Tiebreaker Run.',
+              message: 'SYSTEM — Complete tie detected. A referee must review the result.',
               createdAt: nowIso
             });
           } else {

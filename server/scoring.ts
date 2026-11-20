@@ -364,10 +364,10 @@ export function determineMatchWinner(
     };
   }
 
-  // 6. Complete Tie -> Administrator ruling / tiebreaker run needed
+  // 6. Complete Tie -> Referee ruling required
   return {
     winnerTeamId: '',
-    reason: 'Dead heat tie across all tiebreakers. Admin tiebreaker run required.',
+    reason: 'Dead heat tie across all tiebreakers. Referee ruling required.',
     isTied: true
   };
 }
