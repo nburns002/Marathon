@@ -1,6 +1,6 @@
 import express, { ErrorRequestHandler, Request, Response } from 'express';
 import path from 'path';
-import cors from 'cors';
+import { configureHttpSecurity } from './server/httpSecurity';
 import { createServer as createViteServer } from 'vite';
 import { startTimerWorker, setEventBroadcaster } from './server/timerWorker';
 import { getJwtSecret } from './server/middleware';
@@ -15,9 +15,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(cors());
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  configureHttpSecurity(app);
+  app.use(express.json({ limit: '32kb' }));
+  app.use(express.urlencoded({ extended: false, limit: '32kb', parameterLimit: 50 }));
 
   // SSE Real-time client manager
   const sseClients: Response[] = [];
@@ -33,7 +33,7 @@ async function startServer() {
     }
   }, 20000);
 
-  setEventBroadcaster((eventType: string, data: any) => {
+  setEventBroadcaster((eventType, data) => {
     const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
     for (let i = sseClients.length - 1; i >= 0; i--) {
       try {
@@ -86,7 +86,7 @@ async function startServer() {
     if (error.type === 'entity.too.large') {
       return res.status(413).json({ error: 'Request body is too large.' });
     }
-    console.error('[API] Request failed:', error.name);
+    console.error('[API] Request failed:', _req.method, error.name, error.code);
     return res.status(500).json({ error: 'The server could not complete the request.' });
   };
   app.use('/api', handleApiError);

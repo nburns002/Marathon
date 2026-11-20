@@ -7,3 +7,7 @@ export function isEvidenceUrl(value: unknown): value is string {
     return false;
   }
 }
+
+export function isImageUrl(value: unknown): value is string {
+  return isEvidenceUrl(value) && /^https:\/\//i.test(value.trim());
+}

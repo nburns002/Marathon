@@ -1,3 +1,4 @@
+import { isImageUrl } from '../evidenceUrl';
 import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
@@ -122,12 +123,15 @@ router.get('/search/users', requireAuth, (req: AuthenticatedRequest, res: Respon
 // Create a new team
 router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
-  const { name, tag, logoUrl } = req.body;
+  const { name, tag, logoUrl } = req.body ?? {};
 
   if (typeof name !== 'string' || !name.trim() || name.trim().length > 60 || typeof tag !== 'string') {
     return res.status(400).json({ error: 'Enter a team name of up to 60 characters and a tag.' });
   }
 
+  if (logoUrl !== undefined && (typeof logoUrl !== 'string' || (logoUrl.trim() !== '' && !isImageUrl(logoUrl)))) {
+    return res.status(400).json({ error: 'Enter an optional HTTPS team logo URL without credentials.' });
+  }
   const cleanName = name.trim();
   const cleanTag = tag.trim().toUpperCase();
 
@@ -145,7 +149,7 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     id: `team-${uuidv4().slice(0, 8)}`,
     name: cleanName,
     tag: cleanTag,
-    logoUrl: typeof logoUrl === 'string' && /^https:\/\//i.test(logoUrl) ? logoUrl : '',
+    logoUrl: logoUrl?.trim() || '',
     captainUserId: user.id,
     createdAt: isoNow
   };
@@ -162,10 +166,6 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     joinedAt: isoNow
   };
   db.data.teamMembers.push(captainMember);
-
-  if (user.role === 'PLAYER') {
-    user.role = 'CAPTAIN';
-  }
 
   db.data.auditLogs.push({
     id: uuidv4(),
@@ -201,7 +201,7 @@ router.post('/:id/invite', requireAuth, (req: AuthenticatedRequest, res: Respons
     return res.status(400).json({ error: 'Team already has the maximum of 3 active players.' });
   }
 
-  const { targetUserId, identifier } = req.body;
+  const { targetUserId, identifier } = req.body ?? {};
 
   let targetUser = null;
   if (targetUserId) {

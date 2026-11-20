@@ -154,7 +154,7 @@ router.get('/:id/registry', (req, res) => {
 // POST /api/tournaments/:id/join-check - Eligibility check using centralized validation service
 router.post('/:id/join-check', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
-  const { teamId } = req.body;
+  const { teamId } = req.body ?? {};
 
   if (!teamId) {
     return res.status(400).json({ error: 'Please select a team to check registration eligibility.' });
@@ -180,7 +180,7 @@ router.post('/:id/join-check', requireAuth, (req: AuthenticatedRequest, res: Res
 function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) {
   const user = req.user!;
   const tournamentId = req.params.id;
-  const { teamId, termsAccepted, refundPolicyAccepted } = req.body;
+  const { teamId, termsAccepted, refundPolicyAccepted } = req.body ?? {};
 
   if (!teamId) {
     return res.status(400).json({ error: 'Please select a team to register.' });
@@ -283,7 +283,7 @@ function handleGenerateBracket(req: AuthenticatedRequest, res: Response) {
   }
 
   // 2. Reject ordinary regeneration once tournament is LIVE unless explicit pre-start reset flag is provided
-  if (tournament.status === 'LIVE' && !req.body.allowPreStartReset) {
+  if (tournament.status === 'LIVE' && req.body?.allowPreStartReset !== true) {
     return res.status(400).json({
       error: 'Tournament is currently LIVE. Generating a new bracket requires an explicit pre-start reset parameter.'
     });

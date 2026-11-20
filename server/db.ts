@@ -26,6 +26,7 @@ import { generateSingleEliminationBracket } from './bracket';
 import { calculateRunScore } from './scoring';
 
 export interface DatabaseSchema {
+  demo?: true;
   users: UserRecord[];
   teams: Team[];
   teamMembers: TeamMember[];
@@ -65,22 +66,34 @@ class DatabaseStore {
     }
     this.data = this.loadOrSeed();
     this.lastCommitted = JSON.stringify(this.data);
-    if (process.env.DEMO_MODE !== 'true' && this.data.users.some((user) => user.id === 'usr-admin-1' && user.email === 'director@marathontournaments.gg')) {
+  }
+
+  private readSnapshot(serialized: string): DatabaseSchema {
+    const snapshot = JSON.parse(serialized);
+    const collections = ['users', 'teams', 'teamMembers', 'teamInvitations', 'tournaments',
+      'tournamentRegistrations', 'matches', 'brackets', 'runSubmissions', 'matchMessages',
+      'matchEvidence', 'matchDisputes', 'adminTickets', 'adminActions', 'auditLogs', 'notifications'];
+    if (!snapshot || collections.some((key) => !Array.isArray(snapshot[key]))) {
+      throw new Error('Invalid Marathon database snapshot.');
+    }
+    if (process.env.DEMO_MODE !== 'true' && (snapshot.demo === true ||
+        snapshot.users.some((user: UserRecord) => user.id === 'usr-admin-1' && user.email === 'director@marathontournaments.gg'))) {
       throw new Error('Demo database cannot be used outside demo mode. Choose a separate database for production.');
     }
+    return snapshot;
   }
 
   private loadOrSeed(): DatabaseSchema {
     if (this.sqlite) {
       const row = this.sqlite.prepare('SELECT snapshot FROM tournament_state WHERE id = 1').get();
-      if (row) return JSON.parse(String(row.snapshot));
-      if (fs.existsSync(DB_FILE)) {
-        const snapshot: DatabaseSchema = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+      if (row) return this.readSnapshot(String(row.snapshot));
+      if (process.env.MARATHON_IMPORT_LEGACY_JSON === 'true') {
+        const snapshot = this.readSnapshot(fs.readFileSync(DB_FILE, 'utf-8'));
         this.saveImmediate(snapshot);
         return snapshot;
       }
     } else if (fs.existsSync(DB_FILE)) {
-      return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+      return this.readSnapshot(fs.readFileSync(DB_FILE, 'utf-8'));
     }
 
     // In non-demo environments, initialize clean empty database (never seed demo accounts)
@@ -91,6 +104,7 @@ class DatabaseStore {
     }
 
     const seeded = this.createSeedData();
+    seeded.demo = true;
     this.saveImmediate(seeded);
     return seeded;
   }
@@ -117,12 +131,19 @@ class DatabaseStore {
     };
 
     // Secure production administrator bootstrap mechanism
-    if (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD) {
+    const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim();
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+    if (email !== undefined || password !== undefined) {
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+          !password || password.length < 16 || Buffer.byteLength(password) > 72 ||
+          new Set(password).size < 8) {
+        throw new Error('Provide a valid bootstrap email and a strong password of at least 16 characters and at most 72 bytes.');
+      }
       const nowIso = new Date().toISOString();
       const adminUser: UserRecord = {
         id: `usr-admin-${uuidv4().slice(0, 8)}`,
-        email: process.env.BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase(),
-        passwordHash: bcrypt.hashSync(process.env.BOOTSTRAP_ADMIN_PASSWORD, 10),
+        email: email.toLowerCase(),
+        passwordHash: bcrypt.hashSync(password, 12),
         username: process.env.BOOTSTRAP_ADMIN_USERNAME || 'Admin',
         displayName: process.env.BOOTSTRAP_ADMIN_NAME || 'Platform Administrator',
         bungieId: process.env.BOOTSTRAP_ADMIN_BUNGIE || 'Admin#0001',
@@ -133,7 +154,7 @@ class DatabaseStore {
         updatedAt: nowIso
       };
       schema.users.push(adminUser);
-      console.log(`[DB] Bootstrapped production administrator: ${adminUser.email}`);
+      console.log('[DB] Bootstrapped production administrator.');
     }
 
     return schema;

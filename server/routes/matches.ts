@@ -250,7 +250,7 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
 function handleScoreSubmission(req: AuthenticatedRequest, res: Response) {
   const user = req.user!;
   const matchId = req.params.id;
-  const { runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, evidenceUrl, teamId } = req.body;
+  const { runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, evidenceUrl, teamId } = req.body ?? {};
 
   const result = submitScoreAuthoritative({
     matchId,
@@ -286,7 +286,7 @@ router.post('/:id/messages', requireAuth, (req: AuthenticatedRequest, res: Respo
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { message } = req.body;
+  const { message } = req.body ?? {};
   if (typeof message !== 'string' || !message.trim() || message.length > 2000) {
     return res.status(400).json({ error: 'Enter a message of up to 2,000 characters.' });
   }

@@ -942,6 +942,21 @@ for (const scenario of ['normal', 'dispute correction', 'no-show reversal', 'cor
       assert.equal((await getMatch(match.id, adminToken)).teamARun1.runnerKills, 6);
       assert.equal((await getMatch(match.id, tokenB)).teamARun1.runnerKills, undefined);
       assert.equal((await getMatch(match.id)).teamARun1.runnerKills, undefined);
+      for (const viewerToken of [undefined, tokenB]) {
+        const headers = viewerToken ? { Authorization: `Bearer ${viewerToken}` } : {};
+        const [history, bracket, room] = await Promise.all([
+          fetch(`${baseUrl}/api/teams/${teamAId}`, { headers }).then((response) => response.json()),
+          fetch(`${baseUrl}${tournamentRoute}`, { headers }).then((response) => response.json()),
+          fetch(`${baseUrl}${route}`, { headers }).then((response) => response.json())
+        ]);
+        for (const view of [history.team.matches.find((item: Match) => item.id === match.id),
+          bracket.bracket.matches.find((item: Match) => item.id === match.id), room.match]) {
+          assert.equal(view.teamARun1.runnerKills, undefined);
+          assert.equal(view.teamARun1.extractedCredits, undefined);
+          assert.equal(view.finalScoreA, null);
+        }
+        assert.ok(room.messages.every((message: { structuredScore?: unknown }) => !message.structuredScore));
+      }
       assert.equal((await submit(teamAId, tokenA, 1, 6)).ok, false);
       assert.equal((await submit(teamAId, tokenA, 2, 6)).ok, false);
       assert.equal((await submit(teamBId, tokenB, 1, 2)).status, 200);

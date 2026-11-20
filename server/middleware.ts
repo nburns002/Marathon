@@ -19,14 +19,9 @@ export interface AuthenticatedRequest extends Request {
   user?: User;
 }
 
-export function generateToken(user: { id: string; email: string; username: string; role: any }): string {
+export function generateToken(user: { id: string }): string {
   return jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      role: user.role
-    },
+    { id: user.id },
     getJwtSecret(),
     { expiresIn: '7d' }
   );
@@ -44,7 +39,7 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     const userRecord = db.data.users.find((u) => u.id === decoded.id);
 
     if (!userRecord || userRecord.accountStatus === 'SUSPENDED') {
-      return res.status(401).json({ error: 'Account not found or suspended.' });
+      return res.status(401).json({ error: 'Invalid or expired authentication token.' });
     }
 
     const { passwordHash: _, ...safeUser } = userRecord;

@@ -291,7 +291,7 @@ router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: Authentica
     });
   }
 
-  const { resolution, ruling, newScoreData, reason } = req.body;
+  const { resolution, ruling, newScoreData, reason } = req.body ?? {};
   if (typeof resolution !== 'string' || !resolution.trim() || resolution.length > 2000 ||
       typeof reason !== 'string' || !reason.trim() || reason.length > 2000) {
     return res.status(400).json({ error: 'Resolution details and written reason are required.' });
@@ -358,7 +358,7 @@ router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: Authentica
   });
 
   db.save();
-  broadcastEvent('DISPUTE_RESOLVED', { disputeId: dispute.id, matchId: dispute.matchId });
+  broadcastEvent('DISPUTE_RESOLVED', { matchId: dispute.matchId });
   broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
 
   return res.json({ success: true, dispute, message: 'Dispute resolved successfully.' });
@@ -415,7 +415,7 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = req.body;
+  const { teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = req.body ?? {};
 
   const result = applyAuthoritativeAdminScoreCorrection({
     match,
@@ -448,7 +448,7 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { action, reason } = req.body;
+  const { action, reason } = req.body ?? {};
   const isoNow = new Date().toISOString();
   const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
 

@@ -1,3 +1,4 @@
+import { isEvidenceUrl } from '../../server/evidenceUrl';
 import React, { useState, useEffect } from 'react';
 import {
   Shield,
@@ -316,7 +317,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                       </div>
                       {((d.evidenceUrls && d.evidenceUrls.length > 0) || d.evidenceUrl) && (
                         <div className="mt-2 space-y-1">
-                          {(d.evidenceUrls || [d.evidenceUrl]).filter((url: unknown) => typeof url === 'string' && /^https?:\/\//i.test(url)).map((url: string, idx: number) => (
+                          {(d.evidenceUrls || [d.evidenceUrl]).filter(isEvidenceUrl).map((url: string, idx: number) => (
                             <a
                               key={idx}
                               href={url}

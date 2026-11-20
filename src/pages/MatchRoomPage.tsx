@@ -1,3 +1,4 @@
+import { isEvidenceUrl } from '../../server/evidenceUrl';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Swords,
@@ -775,7 +776,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
           ))}
         </div>
         {evidence.length > 0 && <ul className="space-y-1 text-sm">
-          {evidence.filter((item) => /^https?:\/\//i.test(item.url)).map((item) => (
+          {evidence.filter((item) => isEvidenceUrl(item.url)).map((item) => (
             <li key={item.id}>
               <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline">
                 {item.teamName} · {item.runNumber ? `Run ${item.runNumber} · ` : ''}{item.type}
@@ -785,7 +786,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
         </ul>}
         <div className="flex flex-wrap gap-3 text-sm">
           {[match.teamARun1, match.teamARun2, match.teamBRun1, match.teamBRun2].map((run) =>
-            run?.evidenceUrl && /^https?:\/\//i.test(run.evidenceUrl) ? (
+            isEvidenceUrl(run?.evidenceUrl) ? (
               <a key={run.id} href={run.evidenceUrl} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline">
                 {run.teamId === match.teamAId ? match.teamAName : match.teamBName} · Run {run.runNumber} VOD
               </a>
