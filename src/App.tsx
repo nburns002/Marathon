@@ -14,13 +14,22 @@ import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import { RulesPage } from './pages/RulesPage';
 import { Tournament, Match } from './types';
 
+const pagePaths: Record<string, string> = {
+  home: '/', tournaments: '/tournaments', 'match-room': '/matches', teams: '/teams',
+  profile: '/profile', admin: '/admin', rules: '/rules'
+};
+
 function MainApp() {
   const { user, token } = useAuth();
   const { subscribe } = useRealtime();
 
-  const [currentTab, setCurrentTab] = useState<string>('home');
-  const [selectedTournamentId, setSelectedTournamentId] = useState<string>('tourn-cryo-1');
-  const [selectedMatchId, setSelectedMatchId] = useState<string>();
+  const [pathname, setPathname] = useState(() => window.location.pathname.replace(/\/$/, '') || '/');
+  const detail = pathname.match(/^\/(tournaments|matches)\/([a-zA-Z0-9_-]+)$/);
+  const selectedTournamentId = detail?.[1] === 'tournaments' ? detail[2] : undefined;
+  const selectedMatchId = detail?.[1] === 'matches' ? detail[2] : undefined;
+  const currentTab = selectedTournamentId ? 'tournament-detail' : selectedMatchId ? 'match-room'
+    : Object.keys(pagePaths).find((tab) => pagePaths[tab] === pathname) ?? (pathname.startsWith('/teams/') ? 'teams' : 'home');
+
   const [demoMode, setDemoMode] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
 
@@ -62,17 +71,21 @@ function MainApp() {
     return unsub;
   }, []);
 
-  const handleSelectTournament = (tournId: string) => {
-    setSelectedTournamentId(tournId);
-    setCurrentTab('tournament-detail');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  useEffect(() => {
+    const onPopState = () => setPathname(window.location.pathname.replace(/\/$/, '') || '/');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const navigate = (path: string) => {
+    if (window.location.pathname !== path) window.history.pushState(null, '', path);
+    setPathname(path);
+    window.scrollTo({ top: 0 });
   };
 
-  const handleSelectMatch = (matchId: string) => {
-    setSelectedMatchId(matchId);
-    setCurrentTab('match-room');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  const setCurrentTab = (tab: string) => navigate(pagePaths[tab] ?? '/');
+  const handleSelectTournament = (id: string) => navigate(`/tournaments/${encodeURIComponent(id)}`);
+  const handleSelectMatch = (id: string) => navigate(`/matches/${encodeURIComponent(id)}`);
 
   const renderContent = () => {
     switch (currentTab) {
@@ -107,16 +120,16 @@ function MainApp() {
           <MatchRoomPage
             key={JSON.stringify([selectedMatchId ?? null, token])}
             initialMatchId={selectedMatchId}
-            onBackToTournament={(tournId) => {
-              setSelectedTournamentId(tournId);
-              setCurrentTab('tournament-detail');
-            }}
+            onBackToTournament={handleSelectTournament}
+            onSelectMatch={handleSelectMatch}
           />
         );
       case 'teams':
         return <TeamsPage />;
       case 'profile':
-        return <PlayerProfilePage />;
+        return user ? <PlayerProfilePage key={user.id} /> : (
+          <button className="text-amber-300 underline" onClick={() => setAuthModalOpen(true)}>Sign in to view your profile</button>
+        );
       case 'admin':
         return user?.role === 'ADMIN' || user?.role === 'SUPERADMIN'
           ? <AdminDashboardPage onSelectMatch={handleSelectMatch} />

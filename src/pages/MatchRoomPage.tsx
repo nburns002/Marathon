@@ -29,11 +29,13 @@ import { useRealtime } from '../context/RealtimeContext';
 interface MatchRoomPageProps {
   initialMatchId?: string;
   onBackToTournament?: (tournamentId: string) => void;
+  onSelectMatch: (matchId: string) => void;
 }
 
 export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   initialMatchId,
-  onBackToTournament
+  onBackToTournament,
+  onSelectMatch
 }) => {
   const { user, token, primaryTeam, userTeams } = useAuth();
   const { subscribe } = useRealtime();
@@ -262,7 +264,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
         {allMatches.length > 0 && (
           <label className="mt-4 block text-sm">
             Choose a match
-            <select className="ml-2 rounded bg-slate-800 p-2" value={matchId} onChange={(event) => setMatchId(event.target.value)}>
+            <select className="ml-2 rounded bg-slate-800 p-2" value={matchId} onChange={(event) => onSelectMatch(event.target.value)}>
               <option value={matchId} disabled>Choose a match</option>
               {allMatches.filter((item) => item.id !== matchId).map((item) => (
                 <option key={item.id} value={item.id}>{item.teamAName} vs {item.teamBName}</option>
@@ -634,7 +636,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
           <select
             id="match-selector"
             value={matchId}
-            onChange={(e) => setMatchId(e.target.value)}
+            onChange={(event) => onSelectMatch(event.target.value)}
             className="min-w-0 max-w-full flex-1 truncate rounded-lg border border-[#202d46] bg-[#121929] px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
           >
             {allMatches.map((m) => (

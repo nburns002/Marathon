@@ -33,9 +33,15 @@ export const HomePage: React.FC<HomePageProps> = ({
   const liveTournaments = tournaments.filter((t) => t.status === 'LIVE');
   const openTournaments = tournaments.filter((t) => t.status === 'REGISTRATION_OPEN');
   const featured = liveTournaments[0] || openTournaments[0] || tournaments[0];
+  const upcoming = tournaments.filter((tournament) =>
+    ['REGISTRATION_OPEN', 'REGISTRATION_LOCKED'].includes(tournament.status)
+  ).sort((a, b) => Date.parse(a.tournamentStartAt) - Date.parse(b.tournamentStartAt)).slice(0, 3);
+  const completed = tournaments.filter((tournament) => tournament.status === 'COMPLETED')
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 3);
+
 
   const activeMatches = matches.filter(
-    (m) => !m.isBye && (m.matchStatus === 'ACTIVE' || m.matchStatus === 'READY_CHECK' || m.matchStatus === 'RESULT_PENDING')
+    (m) => !m.isBye && (['ACTIVE', 'READY_CHECK', 'RUN_1_PARTIAL', 'RUN_1_COMPLETE', 'RESULT_PENDING'].includes(m.matchStatus))
   );
 
   return (
@@ -116,10 +122,10 @@ export const HomePage: React.FC<HomePageProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {activeMatches.map((match) => (
-              <div
+              <button type="button"
                 key={match.id}
                 onClick={() => onSelectMatch(match.id)}
-                className="p-5 rounded-2xl bg-[#0f1624] border border-[#212f49] hover:border-amber-500/60 transition-all cursor-pointer shadow-xl group"
+                className="p-5 rounded-2xl text-left bg-[#0f1624] border border-[#212f49] hover:border-amber-500/60 transition-all cursor-pointer shadow-xl group"
               >
                 <div className="flex items-center justify-between text-xs mb-3 pb-2 border-b border-[#1a253a]">
                   <span className="font-mono text-slate-400">Round {match.round} • Match #{match.matchNumber}</span>
@@ -135,7 +141,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                       <span className="font-bold text-sm text-white">{match.teamAName || 'TBD'}</span>
                     </div>
                     <span className="font-mono font-bold text-sm text-amber-300">
-                      {match.finalScoreA !== null ? `${match.finalScoreA.toFixed(2)} pts` : 'Run 1 Pending'}
+                      {typeof match.finalScoreA === 'number' ? `${match.finalScoreA.toFixed(2)} pts` : 'In progress'}
                     </span>
                   </div>
 
@@ -145,7 +151,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                       <span className="font-bold text-sm text-white">{match.teamBName || 'TBD'}</span>
                     </div>
                     <span className="font-mono font-bold text-sm text-amber-300">
-                      {match.finalScoreB !== null ? `${match.finalScoreB.toFixed(2)} pts` : 'Run 1 Pending'}
+                      {typeof match.finalScoreB === 'number' ? `${match.finalScoreB.toFixed(2)} pts` : 'In progress'}
                     </span>
                   </div>
                 </div>
@@ -154,11 +160,39 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <span>Enter Match Room & Chat</span>
                   <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </section>
       )}
+
+      <section aria-label="Tournament schedule and results" className="grid gap-6 md:grid-cols-2">
+        {[
+          { title: 'Upcoming tournaments', entries: upcoming, empty: 'No upcoming tournaments are scheduled.' },
+          { title: 'Recent results', entries: completed, empty: 'No tournaments have concluded yet.' }
+        ].map(({ title, entries, empty }) => (
+          <div key={title} className="rounded-2xl border border-[#1f2c44] bg-[#0f1624] p-5">
+            <h2 className="text-lg font-bold text-white">{title}</h2>
+            {entries.length === 0 ? <p className="mt-3 text-sm text-slate-400">{empty}</p> : (
+              <ul className="mt-3 divide-y divide-slate-800">
+                {entries.map((tournament) => (
+                  <li key={tournament.id}>
+                    <button type="button" onClick={() => onSelectTournament(tournament.id)}
+                      className="flex w-full flex-wrap items-center justify-between gap-2 py-3 text-left text-sm text-amber-300 hover:text-amber-200">
+                      <span className="font-semibold">{tournament.title}</span>
+                      <span className="text-slate-300">
+                        {tournament.championTeamName
+                          ? `Champion · ${tournament.championTeamName}`
+                          : new Date(tournament.tournamentStartAt).toLocaleString()}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </section>
 
       {/* How the Score Race Works (3-Step Lifecycle) */}
       <section className="space-y-6">
