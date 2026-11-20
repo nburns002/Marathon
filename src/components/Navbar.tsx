@@ -17,11 +17,12 @@ import { useRealtime } from '../context/RealtimeContext';
 
 interface NavbarProps {
   currentTab: string;
+  demoMode: boolean;
   setCurrentTab: (tab: string) => void;
   openAuthModal: () => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openAuthModal }) => {
+export const Navbar: React.FC<NavbarProps> = ({ currentTab, demoMode, setCurrentTab, openAuthModal }) => {
   const { user, logout, switchDemoUser, notifications, invitations } = useAuth();
   const { connected } = useRealtime();
 
@@ -41,9 +42,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
   return (
     <header className="sticky top-0 z-40 bg-[#0c1017]/95 backdrop-blur-md border-b border-[#1e2638]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
+        <div className="flex min-h-16 flex-wrap items-center justify-between gap-2 py-2">
           {/* Logo */}
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setCurrentTab('home')}>
+          <button type="button" aria-label="Marathon home" className="flex items-center gap-2 text-left" onClick={() => setCurrentTab('home')}>
             <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center shadow-lg shadow-amber-500/20 border border-amber-400/40">
               <Swords className="w-5 h-5 text-slate-950 font-bold" />
             </div>
@@ -56,10 +57,10 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
               </div>
               <p className="text-[10px] text-slate-400 tracking-widest uppercase font-mono">Competitive Score Race</p>
             </div>
-          </div>
+          </button>
 
           {/* Navigation Links */}
-          <nav className="hidden md:flex items-center gap-1">
+          <nav aria-label="Main navigation" className="order-last flex w-full flex-wrap items-center gap-1 lg:order-none lg:w-auto">
             <button
               onClick={() => setCurrentTab('home')}
               className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -144,7 +145,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
             </div>
 
             {/* Persona Switcher for Quick Scenario Testing */}
-            <div className="relative">
+            {demoMode && <div className="relative">
               <button
                 onClick={() => setShowPersonaMenu(!showPersonaMenu)}
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[#141b2b] border border-amber-500/30 text-xs text-amber-300 hover:bg-[#1a2338] transition-colors"
@@ -186,7 +187,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
                   </div>
                 </div>
               )}
-            </div>
+            </div>}
 
             {/* Notifications Popover */}
             {user && (
@@ -255,13 +256,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, openA
                 <button
                   onClick={() => setCurrentTab('profile')}
                   className="flex items-center gap-2 p-1.5 rounded-lg bg-[#141b2b] border border-[#232f48] hover:border-amber-500/50 transition-colors"
-                  title="View Profile"
+                  title="View Profile" aria-label="View profile"
                 >
-                  <img
+                  {user.avatarUrl ? <img
                     src={user.avatarUrl}
                     alt={user.username}
                     className="w-7 h-7 rounded-md object-cover border border-amber-500/40"
-                  />
+                  /> : <span aria-hidden="true" className="grid size-7 place-items-center rounded-md bg-slate-700 text-xs">{user.displayName.slice(0, 2).toUpperCase()}</span>}
                   <div className="hidden sm:block text-left pr-1">
                     <div className="text-xs font-semibold text-white leading-none">{user.displayName}</div>
                     <div className="text-[10px] text-amber-400 font-mono leading-none mt-1">{user.bungieId}</div>

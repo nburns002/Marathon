@@ -39,6 +39,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
   const [bracket, setBracket] = useState<Bracket | null>(null);
   const [registrations, setRegistrations] = useState<TournamentRegistrationDTO[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState<'bracket' | 'teams' | 'overview' | 'rules' | 'admin'>('bracket');
 
   // Registration Modal State
@@ -66,12 +67,17 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
         setTournament(data.tournament);
         setBracket(data.bracket);
         setRegistrations(data.registrations);
+        setLoadError('');
         if (!selectedTeamId && primaryTeam) {
           setSelectedTeamId(primaryTeam.id);
         }
+      } else {
+        setTournament(null);
+        setLoadError(res.status === 404 ? 'Tournament not found.' : 'Could not load the tournament.');
       }
-    } catch (err) {
-      console.error('Error fetching tournament:', err);
+    } catch {
+      setTournament(null);
+      setLoadError('Could not load the tournament.');
     } finally {
       setLoading(false);
     }
@@ -85,7 +91,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
     return unsub;
   }, [tournamentId, token, user]);
 
-  if (loading || !tournament) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="flex flex-col items-center gap-3">
@@ -93,6 +99,15 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
           <p className="text-xs font-mono text-slate-400">Loading Tournament Cryo Archive...</p>
         </div>
       </div>
+    );
+  }
+
+  if (!tournament) {
+    return (
+      <section className="space-y-3">
+        <p role="alert">{loadError}</p>
+        <button type="button" className="text-amber-300 underline" onClick={onBack}>Back to tournaments</button>
+      </section>
     );
   }
 
@@ -187,7 +202,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
       {/* Hero Banner Header */}
       <div className="relative rounded-3xl overflow-hidden bg-[#0d1320] border border-[#202d46] shadow-2xl">
         <div className="h-48 sm:h-64 relative">
-          <img src={tournament.bannerUrl} alt="" className="w-full h-full object-cover" />
+          {tournament.bannerUrl && <img src={tournament.bannerUrl} alt="" className="w-full h-full object-cover" />}
           <div className="absolute inset-0 bg-gradient-to-t from-[#0d1320] via-[#0d1320]/60 to-transparent"></div>
 
           <div className="absolute bottom-6 left-6 right-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -218,10 +233,11 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                 ) : (
                   <button
                     onClick={() => setShowRegisterModal(true)}
+                    disabled={tournament.checkoutMode === 'UNAVAILABLE'}
                     className="px-6 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-display font-bold text-xs uppercase tracking-wider shadow-lg shadow-amber-500/25 transition-all flex items-center gap-2"
                   >
                     <Trophy className="w-4 h-4" />
-                    <span>Register 3-Man Team (${tournament.entryFeeUsd === 0 ? 'Free' : tournament.entryFeeUsd})</span>
+                    <span>{tournament.checkoutMode === 'UNAVAILABLE' ? 'Paid registration unavailable' : tournament.entryFeeUsd === 0 ? 'Register Team (Free)' : 'Register Team (Simulated Checkout)'}</span>
                   </button>
                 )}
               </div>
@@ -324,7 +340,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                 Public Team Registry & Snapshotted Rosters
               </h3>
               <p className="text-xs text-slate-400">
-                Verified Bungie IDs locked at tournament registration for competitive integrity.
+                Bungie IDs locked at tournament registration for competitive integrity.
               </p>
             </div>
             <span className="text-xs font-mono text-amber-400">
@@ -568,10 +584,11 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
 
             <form onSubmit={handleRegisterTeam} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label htmlFor="registration-team" className="block text-xs font-semibold text-slate-300 mb-1">
                   Select Your Team (Captain Role Required)
                 </label>
                 <select
+                  id="registration-team"
                   value={selectedTeamId}
                   onChange={(e) => setSelectedTeamId(e.target.value)}
                   required
@@ -585,7 +602,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                   ))}
                 </select>
                 <p className="text-[10px] text-slate-400 mt-1">
-                  Must have exactly 3 roster members with verified Bungie IDs.
+                  Must have exactly 3 roster members with valid Bungie IDs.
                 </p>
               </div>
 
@@ -598,7 +615,7 @@ export const TournamentDetailPage: React.FC<TournamentDetailPageProps> = ({
                     <span className="font-mono font-bold text-amber-400">${tournament.entryFeeUsd}.00 USD</span>
                   </div>
                   <p className="text-[10px] text-slate-400">
-                    Payment is handled securely via Stripe Checkout (Simulated Instant Clearance).
+                    Simulated checkout. No money will be charged.
                   </p>
                 </div>
               )}

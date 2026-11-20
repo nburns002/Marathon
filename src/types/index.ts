@@ -108,6 +108,7 @@ export interface Tournament {
   name?: string;
   mapName?: string;
   entryFeeUsd?: number;
+  checkoutMode?: 'FREE' | 'SIMULATED' | 'UNAVAILABLE';
   prizePoolUsd?: number;
   currentTeamCount?: number;
   startsAt?: string;
@@ -130,7 +131,7 @@ export interface TournamentRegistration {
   teamName: string;
   captainUserId: string;
   status: 'REGISTERED' | 'NOT_REGISTERED' | 'CANCELLED' | 'REFUNDED' | 'DISQUALIFIED';
-  paymentStatus: 'PAYMENT_REQUIRED' | 'PAYMENT_PENDING' | 'PAID' | 'PAYMENT_FAILED' | 'REFUNDED';
+  paymentStatus: 'FREE' | 'SIMULATED' | 'PAYMENT_REQUIRED' | 'PAYMENT_PENDING' | 'PAID' | 'PAYMENT_FAILED' | 'REFUNDED';
   rosterSnapshot: TournamentRosterMember[];
   registeredAt: string;
   termsAcceptedAt: string;
@@ -304,6 +305,7 @@ export interface SanitizedRunSubmission {
 }
 
 export interface MatchRoomParticipant {
+  roster: TournamentRosterMember[];
   id: string;
   name: string;
   tag?: string;
@@ -313,6 +315,7 @@ export interface MatchRoomParticipant {
 
 export interface MatchRoomResponse {
   match: Match;
+  tournament: Tournament | null;
   messages: MatchMessage[];
   disputes: MatchDispute[];
   evidence: MatchEvidence[];

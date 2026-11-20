@@ -21,7 +21,7 @@ import {
   ExternalLink,
   ChevronRight
 } from 'lucide-react';
-import { Match, MatchMessage, MatchDispute, User } from '../types';
+import { Match, MatchMessage, MatchDispute, MatchEvidence, MatchRoomParticipant, MatchRoomResponse, Tournament, User } from '../types';
 import { ScoreCalculatorModal } from '../components/ScoreCalculatorModal';
 import { useAuth } from '../context/AuthContext';
 import { useRealtime } from '../context/RealtimeContext';
@@ -38,12 +38,19 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   const { user, token, primaryTeam, userTeams } = useAuth();
   const { subscribe } = useRealtime();
 
-  const [matchId, setMatchId] = useState<string>(initialMatchId || 'match-1');
+  const [matchId, setMatchId] = useState(initialMatchId ?? '');
   const [match, setMatch] = useState<Match | null>(null);
   const [messages, setMessages] = useState<MatchMessage[]>([]);
   const [disputes, setDisputes] = useState<MatchDispute[]>([]);
+  const [tournament, setTournament] = useState<Tournament | null>(null);
+  const [teamA, setTeamA] = useState<MatchRoomParticipant | null>(null);
+  const [teamB, setTeamB] = useState<MatchRoomParticipant | null>(null);
+  const [evidence, setEvidence] = useState<MatchEvidence[]>([]);
+  const [savingEvidence, setSavingEvidence] = useState(false);
+  const matchRequest = useRef(0);
   const [allMatches, setAllMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
+  const [matchError, setMatchError] = useState('');
 
   // Chat input
   const [chatInput, setChatInput] = useState('');
@@ -99,50 +106,69 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
   const [disputeTimeLeftStr, setDisputeTimeLeftStr] = useState<string>('');
 
   const fetchMatchData = async (targetId: string) => {
+    const request = ++matchRequest.current;
     try {
       const res = await fetch(`/api/matches/${targetId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
+      if (request !== matchRequest.current) return;
       if (res.ok) {
-        const data = await res.json();
+        const data: MatchRoomResponse = await res.json();
+        if (request !== matchRequest.current) return;
+        setTournament(data.tournament);
+        setTeamA(data.teamA);
+        setTeamB(data.teamB);
+        setEvidence(data.evidence);
         setMatch(data.match);
         setMessages(data.messages || []);
         setDisputes(data.disputes || []);
+        setMatchError('');
+      } else {
+        setMatch(null);
+        setMatchError(res.status === 404 ? 'This match is no longer available.' : 'Could not load the match.');
       }
-    } catch (err) {
-      console.error('Error fetching match:', err);
+    } catch {
+      if (request !== matchRequest.current) return;
+      setMatch(null);
+      setMatchError('Could not load the match.');
     } finally {
-      setLoading(false);
+      if (request === matchRequest.current) setLoading(false);
     }
   };
 
-  const fetchAllMatches = async () => {
-    try {
-      const res = await fetch('/api/matches', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAllMatches(data.matches || []);
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadMatches = async () => {
+      try {
+        const response = await fetch('/api/matches', { signal: controller.signal });
+        if (!response.ok) throw new Error('Could not load matches');
+        const { matches }: { matches: Match[] } = await response.json();
+        setAllMatches(matches);
+        if (!matchId) {
+          const available = matches.filter((item) => item.teamAId && item.teamBId);
+          const preferred = available.find((item) => item.matchStatus !== 'FINAL') ?? available[0] ?? matches[0];
+          if (preferred) setMatchId(preferred.id);
+          else setLoading(false);
+        }
+      } catch {
+        if (!controller.signal.aborted && !matchId) {
+          setMatchError('Could not load available matches.');
+          setLoading(false);
+        }
       }
-    } catch (err) {
-      console.error('Error fetching match list:', err);
-    }
-  };
-
-  useEffect(() => {
-    fetchAllMatches();
-  }, []);
-
-  useEffect(() => {
-    if (matchId) {
-      fetchMatchData(matchId);
-    }
-    const unsub = subscribe('*', () => {
+    };
+    loadMatches();
+    if (matchId) fetchMatchData(matchId);
+    const unsubscribe = subscribe('*', () => {
+      loadMatches();
       if (matchId) fetchMatchData(matchId);
     });
-    return unsub;
-  }, [matchId]);
+    return () => {
+      controller.abort();
+      matchRequest.current++;
+      unsubscribe();
+    };
+  }, [matchId, token]);
 
   // Auto-scroll chat on new messages
   useEffect(() => {
@@ -215,7 +241,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     return () => clearInterval(interval);
   }, [match]);
 
-  if (loading || !match) {
+  if (loading || (match && match.id !== matchId)) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="flex flex-col items-center gap-3">
@@ -226,22 +252,73 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
     );
   }
 
+  if (!match) {
+    return (
+      <section className="rounded-xl border border-slate-800 p-6">
+        <h1 className="text-xl font-bold text-white">Live Match Room</h1>
+        <p className="mt-2 text-sm text-slate-300" role={matchError ? 'alert' : 'status'}>
+          {matchError || 'No matches are scheduled yet.'}
+        </p>
+        {allMatches.length > 0 && (
+          <label className="mt-4 block text-sm">
+            Choose a match
+            <select className="ml-2 rounded bg-slate-800 p-2" value={matchId} onChange={(event) => setMatchId(event.target.value)}>
+              <option value={matchId} disabled>Choose a match</option>
+              {allMatches.filter((item) => item.id !== matchId).map((item) => (
+                <option key={item.id} value={item.id}>{item.teamAName} vs {item.teamBName}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </section>
+    );
+  }
+
   // Permissions & User Context
-  const isCaptainA = match.teamACaptainId === user?.id || userTeams.some((t) => t.id === match.teamAId && t.captainUserId === user?.id);
-  const isCaptainB = match.teamBCaptainId === user?.id || userTeams.some((t) => t.id === match.teamBId && t.captainUserId === user?.id);
-  const isTeamA = isCaptainA || userTeams.some((t) => t.id === match.teamAId);
-  const isTeamB = isCaptainB || userTeams.some((t) => t.id === match.teamBId);
+  const isCaptainA = !!user && match.teamACaptainId === user.id;
+  const isCaptainB = !!user && match.teamBCaptainId === user.id;
+  const isTeamA = isCaptainA || teamA?.roster.some((member) => member.userId === user?.id) === true;
+  const isTeamB = isCaptainB || teamB?.roster.some((member) => member.userId === user?.id) === true;
   const isCaptain = isCaptainA || isCaptainB;
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPERADMIN';
   const userTeamId = isTeamA ? match.teamAId : isTeamB ? match.teamBId : null;
 
   // Run Visibility Logic (Hidden Run 1 opponent score until both teams submit)
-  const isRun1Complete = Boolean(match.teamARun1 && match.teamBRun1);
+  const isRun1Complete = match.run1Revealed === true;
+  const ownRun1 = isTeamA ? match.teamARun1 : match.teamBRun1;
+  const ownRun2 = isTeamA ? match.teamARun2 : match.teamBRun2;
+  const canSubmitScore = isCaptain && !isAdmin && (
+    (['ACTIVE', 'RUN_1_PARTIAL'].includes(match.matchStatus) && !ownRun1) ||
+    (match.matchStatus === 'RUN_1_COMPLETE' && isRun1Complete && !ownRun2)
+  );
 
   // Lead / Deficit Calculations heading into Run 2
   const run1ScoreA = match.teamARun1?.finalRunScore || 0;
   const run1ScoreB = match.teamBRun1?.finalRunScore || 0;
   const run1Diff = Number((run1ScoreA - run1ScoreB).toFixed(2));
+
+  const submitEvidence = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    setSavingEvidence(true);
+    try {
+      const response = await fetch(`/api/matches/${match.id}/evidence`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'VOD', url: values.get('url'), runNumber: Number(values.get('runNumber')) })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not save evidence.');
+      form.reset();
+      showBanner('Evidence saved.', 'success');
+      fetchMatchData(match.id);
+    } catch (error) {
+      showBanner(error instanceof Error ? error.message : 'Could not save evidence.');
+    } finally {
+      setSavingEvidence(false);
+    }
+  };
 
   // Ready Check Handler
   const handleReadyCheck = async () => {
@@ -678,6 +755,53 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
         )}
       </div>
 
+      <section className="space-y-4 rounded-xl border border-slate-800 p-4">
+        <h2 className="font-bold text-white">Match rosters and evidence</h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {[teamA, teamB].map((team) => team && (
+            <div key={team.id}>
+              <h3 className="text-sm font-semibold text-amber-300">{team.name}</h3>
+              {team.roster.length ? (
+                <ul className="mt-1 space-y-1 text-sm text-slate-300">
+                  {team.roster.map((member) => (
+                    <li key={member.userId} className="break-words">{member.displayNameSnapshot} · {member.bungieIdSnapshot}</li>
+                  ))}
+                </ul>
+              ) : <p className="text-sm text-slate-400">No tournament roster recorded.</p>}
+            </div>
+          ))}
+        </div>
+        {evidence.length > 0 && <ul className="space-y-1 text-sm">
+          {evidence.filter((item) => /^https?:\/\//i.test(item.url)).map((item) => (
+            <li key={item.id}>
+              <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline">
+                {item.teamName} · {item.runNumber ? `Run ${item.runNumber} · ` : ''}{item.type}
+              </a>
+            </li>
+          ))}
+        </ul>}
+        <div className="flex flex-wrap gap-3 text-sm">
+          {[match.teamARun1, match.teamARun2, match.teamBRun1, match.teamBRun2].map((run) =>
+            run?.evidenceUrl && /^https?:\/\//i.test(run.evidenceUrl) ? (
+              <a key={run.id} href={run.evidenceUrl} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline">
+                {run.teamId === match.teamAId ? match.teamAName : match.teamBName} · Run {run.runNumber} VOD
+              </a>
+            ) : null
+          )}
+        </div>
+        {(isTeamA || isTeamB || isAdmin) && (
+          <form onSubmit={submitEvidence} className="flex flex-wrap items-end gap-3">
+            <label className="min-w-0 flex-1 text-sm">VOD URL
+              <input name="url" type="url" required maxLength={2048} className="mt-1 block w-full rounded bg-slate-800 p-2" />
+            </label>
+            <label className="text-sm">Run
+              <select name="runNumber" className="mt-1 block rounded bg-slate-800 p-2"><option value="1">Run 1</option><option value="2">Run 2</option></select>
+            </label>
+            <button type="submit" disabled={savingEvidence} className="rounded bg-slate-700 px-3 py-2 text-sm">Add VOD</button>
+          </form>
+        )}
+      </section>
+
       {/* Main Grid: Live Score Racing & Match Chat */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column (7 cols): Official Run Racing Dashboard */}
@@ -687,10 +811,10 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={() => {
-                  setActiveScoreRunNum(1);
+                  setActiveScoreRunNum(ownRun1 ? 2 : 1);
                   setShowScoreModal(true);
                 }}
-                disabled={!isCaptain || match.matchStatus === 'READY_CHECK' || match.matchStatus === 'FINAL'}
+                disabled={!canSubmitScore}
                 className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-bold text-xs uppercase tracking-wider transition-all disabled:opacity-40 flex items-center gap-1.5"
               >
                 <Calculator className="w-4 h-4" />
@@ -699,7 +823,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
 
               <button
                 onClick={() => setShowDisputeModal(true)}
-                disabled={match.matchStatus !== 'RESULT_PENDING' && match.matchStatus !== 'ACTIVE'}
+                disabled={match.matchStatus !== 'RESULT_PENDING' || (!isCaptain && !isAdmin)}
                 className="px-3 py-2 rounded-xl bg-[#182235] hover:bg-red-950/40 text-red-300 border border-red-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5"
               >
                 <Flag className="w-3.5 h-3.5" />
@@ -709,6 +833,7 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
 
             <button
               onClick={() => setShowAdminTicketModal(true)}
+              disabled={!isTeamA && !isTeamB && !isAdmin}
               className="px-3 py-2 rounded-xl bg-[#141c2c] hover:bg-[#1a2538] text-slate-300 border border-[#24334c] text-xs font-semibold transition-colors flex items-center gap-1.5"
             >
               <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
@@ -1114,11 +1239,13 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
 
       {/* Score Calculator Modal */}
       <ScoreCalculatorModal
+        key={`${match.id}:${activeScoreRunNum}`}
         isOpen={showScoreModal}
         onClose={() => setShowScoreModal(false)}
         onSubmitScore={handleScoreSubmit}
         defaultRunNumber={activeScoreRunNum}
-        featuredObjectiveTitle={match.tournamentName}
+        featuredObjectiveTitle={tournament?.featuredObjectiveTitle}
+        featuredObjectivePoints={tournament?.featuredObjectivePoints}
         teamName={userTeamId === match.teamAId ? match.teamAName : match.teamBName}
       />
 

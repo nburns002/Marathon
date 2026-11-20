@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { X, Calculator, ShieldAlert, CheckCircle2, Crosshair, DollarSign, Users, Award, ExternalLink } from 'lucide-react';
+import { calculateRunScore } from '../../server/scoring';
 
 interface ScoreCalculatorModalProps {
   isOpen: boolean;
@@ -27,52 +28,40 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
   featuredObjectivePoints = 5,
   teamName = 'Your Team'
 }) => {
-  const [runNumber, setRunNumber] = useState<1 | 2>(defaultRunNumber);
-  const [runnerKills, setRunnerKills] = useState<number>(5);
-  const [extractedCredits, setExtractedCredits] = useState<number>(45000);
+  const runNumber = defaultRunNumber;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (isOpen) dialogRef.current?.showModal();
+    else dialogRef.current?.close();
+  }, [isOpen]);
+  const [runnerKills, setRunnerKills] = useState<number>(0);
+  const [extractedCredits, setExtractedCredits] = useState<number>(0);
   const [playersExtracted, setPlayersExtracted] = useState<0 | 1 | 2 | 3>(3);
-  const [objectiveCompleted, setObjectiveCompleted] = useState<boolean>(true);
+  const [objectiveCompleted, setObjectiveCompleted] = useState<boolean>(false);
   const [evidenceUrl, setEvidenceUrl] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
 
   // Synchronized Live Calculation
   const calculation = useMemo(() => {
-    const kills = Math.max(0, Number(runnerKills) || 0);
-    const loot = Math.max(0, Number(extractedCredits) || 0);
-    const killPts = kills * 5;
-    const lootPts = Number((loot / 3000).toFixed(2));
-    const objPts = objectiveCompleted ? featuredObjectivePoints : 0;
-    const base = Number((killPts + lootPts + objPts).toFixed(2));
-
-    let mult = 1.0;
-    let finalScore = 0;
-
-    if (playersExtracted === 3) {
-      mult = 1.2;
-      finalScore = Number((base * 1.2).toFixed(2));
-    } else if (playersExtracted === 1 || playersExtracted === 2) {
-      mult = 1.0;
-      finalScore = Number(base.toFixed(2));
-    } else {
-      mult = 0.0;
-      finalScore = 0.0;
-    }
+    const score = calculateRunScore({
+      runnerKills, extractedCredits, playersExtracted, objectiveCompleted,
+      objectivePointsValue: featuredObjectivePoints
+    });
+    const { runnerKills: kills, extractedCredits: loot } = score;
 
     const commandString = `/score run${runNumber} kills:${kills} loot:${loot} survived:${playersExtracted} objective:${objectiveCompleted ? 'yes' : 'no'}`;
 
     return {
-      killPts,
-      lootPts,
-      objPts,
-      base,
-      mult,
-      finalScore,
+      killPts: score.killPoints,
+      lootPts: score.lootPoints,
+      objPts: score.objectivePoints,
+      base: score.baseScore,
+      mult: score.survivalMultiplier,
+      finalScore: score.finalRunScore,
       commandString
     };
   }, [runnerKills, extractedCredits, playersExtracted, objectiveCompleted, featuredObjectivePoints, runNumber]);
-
-  if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -101,8 +90,8 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
-      <div className="relative w-full max-w-2xl bg-[#0d1320] border border-[#24334f] rounded-2xl shadow-2xl p-6 my-8">
+    <dialog ref={dialogRef} aria-labelledby="score-dialog-title" onCancel={onClose} className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-2xl bg-transparent text-slate-200 backdrop:bg-black/80 backdrop:backdrop-blur-sm">
+      <div className="relative w-full max-w-2xl bg-[#0d1320] border border-[#24334f] rounded-2xl shadow-2xl p-4 sm:p-6">
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-[#1c273d] mb-5">
           <div className="flex items-center gap-3">
@@ -110,7 +99,7 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
               <Calculator className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-display font-bold text-white uppercase tracking-wider">
+              <h3 id="score-dialog-title" className="text-base font-display font-bold text-white uppercase tracking-wider">
                 Official Score Submission & Calculator
               </h3>
               <p className="text-xs text-slate-400">
@@ -119,7 +108,7 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
             </div>
           </div>
           <button
-            onClick={onClose}
+            type="button" aria-label="Close score calculator" onClick={onClose}
             className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -127,42 +116,13 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Run Selector */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-              Select Official Run
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setRunNumber(1)}
-                className={`py-2.5 px-4 rounded-xl text-xs font-bold uppercase transition-all flex items-center justify-center gap-2 border ${
-                  runNumber === 1
-                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20'
-                    : 'bg-[#141d2f] text-slate-300 border-[#24334f] hover:bg-[#1a253b]'
-                }`}
-              >
-                <span>Cryo Archive Run 1</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setRunNumber(2)}
-                className={`py-2.5 px-4 rounded-xl text-xs font-bold uppercase transition-all flex items-center justify-center gap-2 border ${
-                  runNumber === 2
-                    ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md shadow-amber-500/20'
-                    : 'bg-[#141d2f] text-slate-300 border-[#24334f] hover:bg-[#1a253b]'
-                }`}
-              >
-                <span>Cryo Archive Run 2</span>
-              </button>
-            </div>
-          </div>
+          <p className="text-sm font-semibold text-amber-300">Cryo Archive Run {runNumber}</p>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             {/* Runner Eliminations */}
             <div className="p-4 rounded-xl bg-[#121929] border border-[#1f2b44]">
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-semibold text-white flex items-center gap-1.5">
+                <label htmlFor="score-kills" className="text-xs font-semibold text-white flex items-center gap-1.5">
                   <Crosshair className="w-4 h-4 text-red-400" />
                   Enemy Runner Eliminations
                 </label>
@@ -171,7 +131,8 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
               <input
                 type="number"
                 min="0"
-                max="30"
+                step="1"
+                id="score-kills"
                 value={runnerKills}
                 onChange={(e) => setRunnerKills(parseInt(e.target.value, 10) || 0)}
                 className="w-full px-3 py-2 rounded-lg bg-[#182238] border border-[#2b3b5c] text-white font-mono text-base focus:outline-none focus:border-amber-400"
@@ -184,7 +145,7 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
             {/* Extracted Credits */}
             <div className="p-4 rounded-xl bg-[#121929] border border-[#1f2b44]">
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-semibold text-white flex items-center gap-1.5">
+                <label htmlFor="score-credits" className="text-xs font-semibold text-white flex items-center gap-1.5">
                   <DollarSign className="w-4 h-4 text-emerald-400" />
                   Extracted Credit Value
                 </label>
@@ -193,13 +154,14 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
               <input
                 type="number"
                 min="0"
-                step="500"
+                step="any"
+                id="score-credits"
                 value={extractedCredits}
                 onChange={(e) => setExtractedCredits(parseFloat(e.target.value) || 0)}
                 className="w-full px-3 py-2 rounded-lg bg-[#182238] border border-[#2b3b5c] text-white font-mono text-base focus:outline-none focus:border-amber-400"
               />
               <p className="text-[10px] text-slate-400 mt-1.5">
-                Uncapped loot scoring. E.g. 45,000 credits = {Number((extractedCredits / 3000).toFixed(2))} loot points.
+                Uncapped loot scoring. 45,000 credits are worth 15 points before the extraction multiplier.
               </p>
             </div>
           </div>
@@ -270,7 +232,7 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
           {/* Evidence / VOD Link */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
-              Evidence Link / Twitch VOD / Screenshot URL (Required for verification)
+              Evidence Link / Twitch VOD / Screenshot URL (optional)
             </label>
             <div className="relative">
               <ExternalLink className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
@@ -334,6 +296,6 @@ export const ScoreCalculatorModal: React.FC<ScoreCalculatorModalProps> = ({
           </div>
         </form>
       </div>
-    </div>
+    </dialog>
   );
 };

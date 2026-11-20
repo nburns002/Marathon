@@ -93,6 +93,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         'REGISTRY_UPDATED',
         'DISPUTE_RESOLVED',
         'ADMIN_TICKET_CREATED',
+        'ADMIN_TICKET_UPDATED',
         'TOURNAMENT_UPDATED'
       ];
 

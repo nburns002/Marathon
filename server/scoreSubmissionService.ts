@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
-import { calculateRunScore, validateScoreInputs } from './scoring';
+import { calculateRunScore, determineMatchWinner, validateScoreInputs } from './scoring';
+import { isEvidenceUrl } from './evidenceUrl';
 import { broadcastEvent } from './timerWorker';
 import { Match, RunSubmission, User } from '../src/types';
 
@@ -46,6 +47,10 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
     return { success: false, statusCode: 400, error: validation.error };
   }
 
+  if (evidenceUrl !== undefined && evidenceUrl !== '' && !isEvidenceUrl(evidenceUrl)) {
+    return { success: false, statusCode: 400, error: 'Enter a valid HTTP or HTTPS evidence URL.' };
+  }
+
   const runNum = input.runNumber as 1 | 2;
 
   const match = db.data.matches.find((m) => m.id === matchId);
@@ -63,6 +68,10 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
     };
   }
 
+  if (match.matchDeadlineAt && Date.now() >= Date.parse(match.matchDeadlineAt)) {
+    return { success: false, statusCode: 400, error: 'The match submission window has expired.' };
+  }
+
   // 3. Captain-Only Authorization Policy
   // Only the designated captain of Team A or Team B may submit official scores.
   // Ordinary roster members are rejected with 403.
@@ -77,8 +86,8 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
     ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
     : null;
 
-  const isCaptainA = teamA?.captainUserId === user.id || regA?.captainUserId === user.id;
-  const isCaptainB = teamB?.captainUserId === user.id || regB?.captainUserId === user.id;
+  const isCaptainA = (regA?.captainUserId ?? teamA?.captainUserId) === user.id;
+  const isCaptainB = (regB?.captainUserId ?? teamB?.captainUserId) === user.id;
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
   if (isAdmin) {
@@ -283,7 +292,13 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
       match.finalScoreA = Number(((match.teamARun1?.finalRunScore || 0) + (match.teamARun2?.finalRunScore || 0)).toFixed(2));
       match.finalScoreB = Number(((match.teamBRun1?.finalRunScore || 0) + (match.teamBRun2?.finalRunScore || 0)).toFixed(2));
 
-      const provWinner = match.finalScoreA >= match.finalScoreB ? match.teamAName : match.teamBName;
+      const provisional = determineMatchWinner(
+        { teamId: match.teamAId!, run1: match.teamARun1, run2: match.teamARun2 },
+        { teamId: match.teamBId!, run1: match.teamBRun1, run2: match.teamBRun2 }
+      );
+      const resultSummary = provisional.isTied
+        ? 'Tied after all tiebreakers. A referee must review the result.'
+        : `Provisional winner: ${provisional.winnerTeamId === match.teamAId ? match.teamAName : match.teamBName}`;
 
       db.data.matchMessages.push({
         id: uuidv4(),
@@ -292,7 +307,7 @@ export function submitScoreAuthoritative(input: ScoreSubmissionInput): ScoreSubm
         userName: 'SYSTEM',
         userRole: 'SYSTEM',
         type: 'SYSTEM',
-        message: `SYSTEM — ALL RUNS COMPLETED. PROVISIONAL RESULT:\n${match.teamAName}: ${match.finalScoreA.toFixed(2)} pts\n${match.teamBName}: ${match.finalScoreB.toFixed(2)} pts\nProvisional Winner: ${provWinner}\n${disputeMinutes}-Minute Result Review Window started. Finalizes automatically if no dispute is raised.`,
+        message: `SYSTEM — ALL RUNS COMPLETED. PROVISIONAL RESULT:\n${match.teamAName}: ${match.finalScoreA.toFixed(2)} pts\n${match.teamBName}: ${match.finalScoreB.toFixed(2)} pts\n${resultSummary}\n${disputeMinutes}-Minute Result Review Window started. Finalizes automatically if no dispute is raised.`,
         createdAt: isoNow
       });
     }

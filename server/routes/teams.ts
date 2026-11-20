@@ -125,15 +125,15 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
   const { name, tag, logoUrl } = req.body;
 
-  if (!name || !tag) {
-    return res.status(400).json({ error: 'Team name and tag (2-4 uppercase characters) are required.' });
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 60 || typeof tag !== 'string') {
+    return res.status(400).json({ error: 'Enter a team name of up to 60 characters and a tag.' });
   }
 
   const cleanName = name.trim();
   const cleanTag = tag.trim().toUpperCase();
 
-  if (cleanTag.length < 2 || cleanTag.length > 5) {
-    return res.status(400).json({ error: 'Team tag must be between 2 and 5 characters.' });
+  if (!/^[A-Z0-9]{2,5}$/.test(cleanTag)) {
+    return res.status(400).json({ error: 'Use 2–5 letters or digits for the team tag.' });
   }
 
   const existingName = db.data.teams.find((t) => t.name.toLowerCase() === cleanName.toLowerCase());
@@ -146,7 +146,7 @@ router.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     id: `team-${uuidv4().slice(0, 8)}`,
     name: cleanName,
     tag: cleanTag,
-    logoUrl: logoUrl || `https://images.unsplash.com/photo-1542751371-adc38448a05e?w=128&auto=format&fit=crop&q=80`,
+    logoUrl: typeof logoUrl === 'string' && /^https:\/\//i.test(logoUrl) ? logoUrl : '',
     captainUserId: user.id,
     createdAt: isoNow
   };
@@ -279,11 +279,17 @@ router.post('/invitations/:id/respond', requireAuth, (req: AuthenticatedRequest,
     return res.status(400).json({ error: `Invitation has already been ${invitation.status.toLowerCase()}.` });
   }
 
-  const { action } = req.body;
+  const { action } = req.body ?? {};
+  if (action !== 'ACCEPT' && action !== 'DECLINE') {
+    return res.status(400).json({ error: 'Choose whether to accept or decline the invitation.' });
+  }
   const isoNow = new Date().toISOString();
 
   if (action === 'ACCEPT') {
     const activeMembers = db.data.teamMembers.filter((tm) => tm.teamId === invitation.teamId && tm.membershipStatus === 'ACTIVE');
+    if (activeMembers.some((member) => member.userId === user.id)) {
+      return res.status(409).json({ error: 'You are already on this team.' });
+    }
     if (activeMembers.length >= 3) {
       return res.status(400).json({ error: 'This team has already reached the maximum 3-player roster capacity.' });
     }
@@ -321,6 +327,39 @@ router.post('/invitations/:id/respond', requireAuth, (req: AuthenticatedRequest,
     db.save();
     return res.json({ success: true, message: 'Invitation declined.' });
   }
+});
+
+router.delete('/:id/members/:userId', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const actor = req.user!;
+  const team = db.data.teams.find((item) => item.id === req.params.id);
+  if (!team) return res.status(404).json({ error: 'Team not found.' });
+  const memberId = req.params.userId;
+  if (actor.id !== memberId && actor.id !== team.captainUserId) {
+    return res.status(403).json({ error: 'Only the captain can remove another player.' });
+  }
+  if (memberId === team.captainUserId) {
+    return res.status(409).json({ error: 'The team captain cannot leave the roster.' });
+  }
+  const memberIndex = db.data.teamMembers.findIndex((member) =>
+    member.teamId === team.id && member.userId === memberId && member.membershipStatus === 'ACTIVE'
+  );
+  if (memberIndex < 0) return res.status(404).json({ error: 'Active team member not found.' });
+
+  const locked = db.data.tournamentRegistrations.some((registration) =>
+    registration.teamId === team.id && registration.status === 'REGISTERED' &&
+    db.data.tournaments.some((tournament) => tournament.id === registration.tournamentId &&
+      ['REGISTRATION_OPEN', 'REGISTRATION_LOCKED', 'LIVE'].includes(tournament.status))
+  );
+  if (locked) return res.status(409).json({ error: 'This roster is locked by a tournament registration.' });
+
+  db.data.teamMembers.splice(memberIndex, 1);
+  db.data.auditLogs.push({
+    id: uuidv4(), actorType: 'USER', actorId: actor.id, actorName: actor.username,
+    action: actor.id === memberId ? 'TEAM_MEMBER_LEFT' : 'TEAM_MEMBER_REMOVED',
+    entityType: 'TEAM', entityId: team.id, metadata: { memberId }, timestamp: new Date().toISOString()
+  });
+  db.save();
+  return res.json({ message: actor.id === memberId ? 'You left the team.' : 'Player removed from the roster.' });
 });
 
 export default router;

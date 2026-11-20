@@ -15,18 +15,20 @@ import { RulesPage } from './pages/RulesPage';
 import { Tournament, Match } from './types';
 
 function MainApp() {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const { subscribe } = useRealtime();
 
   const [currentTab, setCurrentTab] = useState<string>('home');
   const [selectedTournamentId, setSelectedTournamentId] = useState<string>('tourn-cryo-1');
-  const [selectedMatchId, setSelectedMatchId] = useState<string>('match-1');
+  const [selectedMatchId, setSelectedMatchId] = useState<string>();
+  const [demoMode, setDemoMode] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
 
   // Global Data
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadError, setLoadError] = useState(false);
 
   const fetchGlobalData = async () => {
     try {
@@ -34,6 +36,7 @@ function MainApp() {
         fetch('/api/tournaments'),
         fetch('/api/matches')
       ]);
+      setLoadError(!tRes.ok || !mRes.ok);
       if (tRes.ok) {
         const tData = await tRes.json();
         setTournaments(tData.tournaments || []);
@@ -42,8 +45,8 @@ function MainApp() {
         const mData = await mRes.json();
         setMatches(mData.matches || []);
       }
-    } catch (err) {
-      console.error('Error fetching global tournament data:', err);
+    } catch {
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -51,6 +54,8 @@ function MainApp() {
 
   useEffect(() => {
     fetchGlobalData();
+    fetch('/api/health').then((res) => res.ok ? res.json() : null)
+      .then((data) => setDemoMode(data?.demoMode === true)).catch(() => {});
     const unsub = subscribe('*', () => {
       fetchGlobalData();
     });
@@ -91,6 +96,7 @@ function MainApp() {
       case 'tournament-detail':
         return (
           <TournamentDetailPage
+            key={JSON.stringify([selectedTournamentId, token])}
             tournamentId={selectedTournamentId}
             onBack={() => setCurrentTab('tournaments')}
             onSelectMatch={handleSelectMatch}
@@ -99,6 +105,7 @@ function MainApp() {
       case 'match-room':
         return (
           <MatchRoomPage
+            key={JSON.stringify([selectedMatchId ?? null, token])}
             initialMatchId={selectedMatchId}
             onBackToTournament={(tournId) => {
               setSelectedTournamentId(tournId);
@@ -111,7 +118,9 @@ function MainApp() {
       case 'profile':
         return <PlayerProfilePage />;
       case 'admin':
-        return <AdminDashboardPage onSelectMatch={handleSelectMatch} />;
+        return user?.role === 'ADMIN' || user?.role === 'SUPERADMIN'
+          ? <AdminDashboardPage onSelectMatch={handleSelectMatch} />
+          : <p role="status">Administrator access is required.</p>;
       case 'rules':
         return <RulesPage />;
       default:
@@ -130,12 +139,19 @@ function MainApp() {
   return (
     <div className="min-h-screen flex flex-col bg-[#080b11] text-[#e2e8f0]">
       <Navbar
+        demoMode={demoMode}
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
         openAuthModal={() => setAuthModalOpen(true)}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-8">
+        {loadError && (
+          <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded border border-red-400/40 p-3 text-sm text-red-300">
+            Some tournament data could not be loaded.
+            <button type="button" onClick={fetchGlobalData} className="underline">Retry</button>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center min-h-[400px]">
             <div className="flex flex-col items-center gap-3">

@@ -22,16 +22,19 @@ function toPublicUser(u?: User | UserRecord | null): PublicUser | undefined {
 
 // Register new user
 router.post('/register', (req, res) => {
-  const { email, username, displayName, bungieId, password } = req.body;
+  const { email, username, displayName, bungieId, password } = req.body ?? {};
 
-  if (!email || !username || !password || !bungieId) {
-    return res.status(400).json({ error: 'Email, username, Bungie ID, and password are required.' });
+  if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
+      typeof username !== 'string' || !/^[a-zA-Z0-9_-]{3,32}$/.test(username.trim()) ||
+      typeof password !== 'string' || password.length < 8 || Buffer.byteLength(password) > 72 ||
+      typeof bungieId !== 'string' || (displayName != null && (typeof displayName !== 'string' || displayName.length > 64))) {
+    return res.status(400).json({ error: 'Enter a valid email, a 3–32 character username, a Bungie ID, and a password of at least 8 characters and at most 72 bytes.' });
   }
 
   const cleanBungieId = bungieId.trim();
   if (!validateBungieIdFormat(cleanBungieId)) {
     return res.status(400).json({
-      error: `Invalid Bungie ID format '${cleanBungieId}'. Format must be DisplayName#1234 (2-24 characters followed by 4-5 digits).`
+      error: 'Enter a Bungie ID such as DisplayName#1234.'
     });
   }
 
@@ -55,7 +58,7 @@ router.post('/register', (req, res) => {
     username: username.trim(),
     displayName: displayName?.trim() || username.trim(),
     bungieId: cleanBungieId,
-    avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(username.trim())}`,
+    avatarUrl: '',
     role: 'PLAYER',
     accountStatus: 'ACTIVE',
     createdAt: isoNow,
@@ -84,8 +87,8 @@ router.post('/register', (req, res) => {
 
 // Login
 router.post('/login', (req, res) => {
-  const { login, password } = req.body;
-  if (!login || !password) {
+  const { login, password } = req.body ?? {};
+  if (typeof login !== 'string' || !login.trim() || login.length > 254 || typeof password !== 'string' || !password || Buffer.byteLength(password) > 72) {
     return res.status(400).json({ error: 'Email or username and password are required.' });
   }
 
@@ -148,28 +151,20 @@ router.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
 // Update Profile
 router.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
-  const { displayName, bungieId, avatarUrl } = req.body;
-
-  const userRecord = db.data.users.find((u) => u.id === user.id);
-
-  if (displayName) {
-    user.displayName = displayName.trim();
-    if (userRecord) userRecord.displayName = displayName.trim();
-  }
-  if (avatarUrl) {
-    user.avatarUrl = avatarUrl.trim();
-    if (userRecord) userRecord.avatarUrl = avatarUrl.trim();
+  const { displayName, bungieId, avatarUrl } = req.body ?? {};
+  if ((displayName !== undefined && (typeof displayName !== 'string' || !displayName.trim() || displayName.length > 64)) ||
+      (bungieId !== undefined && !validateBungieIdFormat(bungieId)) ||
+      (avatarUrl !== undefined && (typeof avatarUrl !== 'string' || avatarUrl.length > 2048 ||
+        (avatarUrl.trim() && !/^https:\/\//i.test(avatarUrl.trim()))))) {
+    return res.status(400).json({ error: 'Enter a display name, a valid Bungie ID, and an optional HTTPS avatar URL.' });
   }
 
-  if (bungieId && bungieId.trim() !== user.bungieId) {
-    const cleanBungie = bungieId.trim();
-    if (!validateBungieIdFormat(cleanBungie)) {
-      return res.status(400).json({
-        error: `Invalid Bungie ID format '${cleanBungie}'. Format must be DisplayName#1234.`
-      });
-    }
-    user.bungieId = cleanBungie;
-    if (userRecord) userRecord.bungieId = cleanBungie;
+  const userRecord = db.data.users.find((u) => u.id === user.id)!;
+  if (displayName !== undefined) user.displayName = userRecord.displayName = displayName.trim();
+  if (avatarUrl !== undefined) user.avatarUrl = userRecord.avatarUrl = avatarUrl.trim();
+
+  if (bungieId !== undefined && bungieId.trim() !== user.bungieId) {
+    user.bungieId = userRecord.bungieId = bungieId.trim();
 
     db.data.auditLogs.push({
       id: uuidv4(),

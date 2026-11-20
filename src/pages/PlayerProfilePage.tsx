@@ -51,11 +51,15 @@ export const PlayerProfilePage: React.FC = () => {
       {/* Profile Header */}
       <div className="p-8 rounded-3xl bg-[#0f1624] border border-[#1f2b42] shadow-2xl relative overflow-hidden">
         <div className="flex flex-col sm:flex-row items-center gap-6">
-          <img
+          {user.avatarUrl ? <img
             src={user.avatarUrl}
             alt={user.username}
             className="w-24 h-24 rounded-2xl object-cover border-2 border-amber-500/40 shadow-xl"
-          />
+          /> : (
+            <span aria-hidden="true" className="grid size-16 place-items-center rounded-xl bg-slate-800 text-xl font-bold text-amber-300">
+              {user.displayName.slice(0, 2).toUpperCase()}
+            </span>
+          )}
 
           <div className="space-y-1 text-center sm:text-left flex-1">
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
