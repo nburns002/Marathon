@@ -13,7 +13,11 @@ import adminRoutes from './server/routes/admin';
 async function startServer() {
   getJwtSecret();
   const app = express();
-  const PORT = 3000;
+  const configuredPort = process.env.PORT ?? '3000';
+  const port = Number(configuredPort);
+  if (!/^\d+$/.test(configuredPort) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('PORT must be an integer between 1 and 65535.');
+  }
 
   configureHttpSecurity(app);
   app.use(express.json({ limit: '32kb' }));
@@ -109,8 +113,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Server] Marathon Tournament Engine running at http://0.0.0.0:${PORT}`);
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`[Server] Marathon Tournament Engine running at http://0.0.0.0:${port}`);
   });
 }
 

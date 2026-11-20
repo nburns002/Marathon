@@ -15,9 +15,13 @@ export function authRateLimit(limit: number) {
 }
 
 export function configureHttpSecurity(app: Express) {
-  const proxies = (process.env.TRUSTED_PROXY_IPS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
-  if (proxies.some((ip) => !isIP(ip))) throw new Error('TRUSTED_PROXY_IPS must contain only IP addresses.');
-  if (proxies.length) app.set('trust proxy', proxies);
+  if (process.env.RENDER === 'true') {
+    app.set('trust proxy', 1);
+  } else {
+    const proxies = (process.env.TRUSTED_PROXY_IPS ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+    if (proxies.some((ip) => !isIP(ip))) throw new Error('TRUSTED_PROXY_IPS must contain only IP addresses.');
+    if (proxies.length) app.set('trust proxy', proxies);
+  }
 
   if (process.env.NODE_ENV !== 'production') {
     app.disable('x-powered-by');
