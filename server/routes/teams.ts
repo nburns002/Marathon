@@ -100,19 +100,18 @@ router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
 
 // Search users for invite
 router.get('/search/users', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  const q = ((req.query.q as string) || '').toLowerCase().trim();
-  if (!q) {
+  const q = typeof req.query.q === 'string' ? req.query.q.toLowerCase().trim() : '';
+  if (q.length < 2 || q.length > 64) {
     return res.json({ users: [] });
   }
 
   const users = db.data.users
     .filter(
       (u) =>
-        u.id !== req.user!.id &&
+        u.id !== req.user!.id && u.accountStatus === 'ACTIVE' &&
         (u.username.toLowerCase().includes(q) ||
           u.displayName.toLowerCase().includes(q) ||
-          u.bungieId.toLowerCase().includes(q) ||
-          u.email.toLowerCase().includes(q))
+          u.bungieId.toLowerCase().includes(q))
     )
     .slice(0, 10)
     .map((u) => toPublicUser(u));
@@ -219,7 +218,7 @@ router.post('/:id/invite', requireAuth, (req: AuthenticatedRequest, res: Respons
     );
   }
 
-  if (!targetUser) {
+  if (!targetUser || targetUser.accountStatus === 'SUSPENDED') {
     return res.status(404).json({
       error: 'Target player not found. Please ensure the user has created an account before inviting them.'
     });

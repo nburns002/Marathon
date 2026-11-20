@@ -74,7 +74,15 @@ export const BracketView: React.FC<BracketViewProps> = ({ bracket, onSelectMatch
                   return (
                     <div
                       key={match.id}
+                      role={match.isBye ? undefined : 'button'}
+                      tabIndex={match.isBye ? undefined : 0}
                       onClick={() => !match.isBye && onSelectMatch(match.id)}
+                      onKeyDown={(event) => {
+                        if (!match.isBye && (event.key === 'Enter' || event.key === ' ')) {
+                          event.preventDefault();
+                          onSelectMatch(match.id);
+                        }
+                      }}
                       className={`group relative rounded-xl border transition-all duration-200 overflow-hidden ${
                         match.isBye
                           ? 'bg-[#0f1420]/70 border-[#1a2336] opacity-75'

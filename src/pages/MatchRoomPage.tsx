@@ -622,19 +622,20 @@ export const MatchRoomPage: React.FC<MatchRoomPageProps> = ({
                 Round {match.round} • Match #{match.matchNumber}
               </span>
             </div>
-            <h1 className="text-xl sm:text-2xl font-display font-bold text-white uppercase tracking-wider">
+            <h1 className="break-words text-xl sm:text-2xl font-display font-bold text-white uppercase tracking-wider">
               {match.teamAName} <span className="text-amber-400">VS</span> {match.teamBName}
             </h1>
           </div>
         </div>
 
         {/* Match Select Dropdown */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-slate-400">Switch Match:</span>
+        <div className="flex min-w-0 max-w-full items-center gap-2">
+          <label htmlFor="match-selector" className="shrink-0 text-xs font-mono text-slate-400">Switch match</label>
           <select
+            id="match-selector"
             value={matchId}
             onChange={(e) => setMatchId(e.target.value)}
-            className="px-3 py-1.5 rounded-lg bg-[#121929] border border-[#202d46] text-xs font-mono text-white focus:outline-none focus:border-amber-400"
+            className="min-w-0 max-w-full flex-1 truncate rounded-lg border border-[#202d46] bg-[#121929] px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-amber-400"
           >
             {allMatches.map((m) => (
               <option key={m.id} value={m.id}>

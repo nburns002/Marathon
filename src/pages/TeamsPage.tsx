@@ -10,7 +10,7 @@ import {
   Mail,
   AlertCircle
 } from 'lucide-react';
-import { Team, TeamInvitation } from '../types';
+import { PublicUser } from '../types';
 import { useAuth } from '../context/AuthContext';
 
 export const TeamsPage: React.FC = () => {
@@ -32,6 +32,35 @@ export const TeamsPage: React.FC = () => {
 
   const [rosterFeedback, setRosterFeedback] = useState<{ error: boolean; message: string } | null>(null);
   const [changingRoster, setChangingRoster] = useState(false);
+
+  const [playerResults, setPlayerResults] = useState<PublicUser[]>([]);
+
+  useEffect(() => {
+    refreshUser();
+  }, [token]);
+
+  useEffect(() => {
+    setPlayerResults([]);
+    const query = inviteIdentifier.trim();
+    if (!token || !inviteTeamId || query.length < 2 || query.includes('@')) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/teams/search/users?q=${encodeURIComponent(query)}`, {
+          headers: { Authorization: `Bearer ${token}` }, signal: controller.signal
+        });
+        if (!response.ok || controller.signal.aborted) return;
+        const { users }: { users: PublicUser[] } = await response.json();
+        if (!controller.signal.aborted) setPlayerResults(users.filter((player) => player.username !== query));
+      } catch {
+        // Exact-identifier invitations remain available when search is unavailable.
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [inviteIdentifier, inviteTeamId, token]);
 
   const removeMember = async (teamId: string, memberId: string) => {
     if (!token || changingRoster) return;
@@ -119,18 +148,19 @@ export const TeamsPage: React.FC = () => {
 
   const handleRespondInvitation = async (invitationId: string, action: 'ACCEPT' | 'DECLINE') => {
     if (!token) return;
+    setRosterFeedback(null);
     try {
-      await fetch(`/api/teams/invitations/${invitationId}/respond`, {
+      const response = await fetch(`/api/teams/invitations/${invitationId}/respond`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ action })
       });
-      refreshUser();
-    } catch (err) {
-      console.error('Invite response error:', err);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not update the invitation.');
+      await refreshUser();
+      setRosterFeedback({ error: false, message: result.message });
+    } catch (error) {
+      setRosterFeedback({ error: true, message: error instanceof Error ? error.message : 'Could not update the invitation.' });
     }
   };
 
@@ -406,12 +436,13 @@ export const TeamsPage: React.FC = () => {
 
             <form onSubmit={handleInviteMember} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label htmlFor="invite-player" className="block text-xs font-semibold text-slate-300 mb-1">
                   Player Username, Email, or Bungie ID
                 </label>
                 <input
                   type="text"
                   required
+                  id="invite-player"
                   value={inviteIdentifier}
                   onChange={(e) => setInviteIdentifier(e.target.value)}
                   placeholder="e.g. ArachneQueen or player@outlook.com"
@@ -419,6 +450,18 @@ export const TeamsPage: React.FC = () => {
                 />
               </div>
 
+              {playerResults.length > 0 && (
+                <ul aria-label="Matching players" className="max-h-36 space-y-1 overflow-y-auto">
+                  {playerResults.map((player) => (
+                    <li key={player.id}>
+                      <button type="button" className="w-full rounded bg-slate-800 px-3 py-2 text-left text-sm hover:bg-slate-700"
+                        onClick={() => setInviteIdentifier(player.username)}>
+                        {player.displayName} <span className="text-amber-300">{player.bungieId}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <button
                 type="submit"
                 disabled={inviteLoading || !inviteIdentifier.trim()}
