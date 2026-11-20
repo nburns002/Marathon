@@ -8,3 +8,5 @@ coverage/
 !.env.example
 marathon_db.json
 marathon_db*.json
+marathon_db.json.*.tmp
+marathon.sqlite*

@@ -3,6 +3,7 @@ import path from 'path';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import { startTimerWorker, setEventBroadcaster } from './server/timerWorker';
+import { getJwtSecret } from './server/middleware';
 import authRoutes from './server/routes/auth';
 import teamRoutes from './server/routes/teams';
 import tournamentRoutes from './server/routes/tournaments';
@@ -10,6 +11,7 @@ import matchRoutes from './server/routes/matches';
 import adminRoutes from './server/routes/admin';
 
 async function startServer() {
+  getJwtSecret();
   const app = express();
   const PORT = 3000;
 
@@ -64,7 +66,7 @@ async function startServer() {
 
   // Health check
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
+    res.json({ status: 'ok', demoMode: process.env.DEMO_MODE === 'true', time: new Date().toISOString() });
   });
 
   // API Routes

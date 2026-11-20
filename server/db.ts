@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -43,26 +44,41 @@ export interface DatabaseSchema {
   notifications: Notification[];
 }
 
-const DB_FILE = path.join(process.cwd(), 'marathon_db.json');
+const DB_FILE = process.env.MARATHON_JSON_PATH || path.join(process.cwd(), 'marathon_db.json');
 
 class DatabaseStore {
   public data: DatabaseSchema;
-  private saveTimeout: NodeJS.Timeout | null = null;
+  private readonly sqlite?: DatabaseSync;
 
   constructor() {
+    if (process.env.MARATHON_SQLITE_PATH) {
+      this.sqlite = new DatabaseSync(process.env.MARATHON_SQLITE_PATH);
+      this.sqlite.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        CREATE TABLE IF NOT EXISTS tournament_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          snapshot TEXT NOT NULL CHECK (json_valid(snapshot))
+        ) STRICT;
+      `);
+    }
     this.data = this.loadOrSeed();
+    if (process.env.DEMO_MODE !== 'true' && this.data.users.some((user) => user.id === 'usr-admin-1' && user.email === 'director@marathontournaments.gg')) {
+      throw new Error('Demo database cannot be used outside demo mode. Choose a separate database for production.');
+    }
   }
 
   private loadOrSeed(): DatabaseSchema {
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        console.log('[DB] Loaded existing database from disk.');
-        return parsed;
-      } catch (err) {
-        console.error('[DB] Failed to parse database file, reseeding...', err);
+    if (this.sqlite) {
+      const row = this.sqlite.prepare('SELECT snapshot FROM tournament_state WHERE id = 1').get();
+      if (row) return JSON.parse(String(row.snapshot));
+      if (fs.existsSync(DB_FILE)) {
+        const snapshot: DatabaseSchema = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+        this.saveImmediate(snapshot);
+        return snapshot;
       }
+    } else if (fs.existsSync(DB_FILE)) {
+      return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
     }
 
     // In non-demo environments, initialize clean empty database (never seed demo accounts)
@@ -108,7 +124,7 @@ class DatabaseStore {
         username: process.env.BOOTSTRAP_ADMIN_USERNAME || 'Admin',
         displayName: process.env.BOOTSTRAP_ADMIN_NAME || 'Platform Administrator',
         bungieId: process.env.BOOTSTRAP_ADMIN_BUNGIE || 'Admin#0001',
-        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=Admin`,
+        avatarUrl: '',
         role: 'SUPERADMIN',
         accountStatus: 'ACTIVE',
         createdAt: nowIso,
@@ -122,18 +138,22 @@ class DatabaseStore {
   }
 
   public save(): void {
-    if (this.saveTimeout) clearTimeout(this.saveTimeout);
-    this.saveTimeout = setTimeout(() => {
-      this.saveImmediate(this.data);
-    }, 200);
+    this.saveImmediate();
   }
 
   public saveImmediate(dataToSave: DatabaseSchema = this.data): void {
-    try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('[DB] Error writing DB file:', err);
+    const snapshot = JSON.stringify(dataToSave);
+    if (this.sqlite) {
+      this.sqlite.prepare(`
+        INSERT INTO tournament_state (id, snapshot) VALUES (1, ?)
+        ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot
+      `).run(snapshot);
+      return;
     }
+
+    const stagingFile = `${DB_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(stagingFile, snapshot, { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(stagingFile, DB_FILE);
   }
 
   private createSeedData(): DatabaseSchema {
