@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { ErrorRequestHandler, Request, Response } from 'express';
 import path from 'path';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
@@ -75,6 +75,21 @@ async function startServer() {
   app.use('/api/tournaments', tournamentRoutes);
   app.use('/api/matches', matchRoutes);
   app.use('/api/admin', adminRoutes);
+
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'API endpoint not found.' }));
+
+  const handleApiError: ErrorRequestHandler = (error, _req, res, next) => {
+    if (res.headersSent) return next(error);
+    if (error.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'Invalid JSON request body.' });
+    }
+    if (error.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'Request body is too large.' });
+    }
+    console.error('[API] Request failed:', error.name);
+    return res.status(500).json({ error: 'The server could not complete the request.' });
+  };
+  app.use('/api', handleApiError);
 
   // Start background authoritative timer worker
   startTimerWorker();

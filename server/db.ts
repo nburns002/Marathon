@@ -49,6 +49,7 @@ const DB_FILE = process.env.MARATHON_JSON_PATH || path.join(process.cwd(), 'mara
 class DatabaseStore {
   public data: DatabaseSchema;
   private readonly sqlite?: DatabaseSync;
+  private lastCommitted?: string;
 
   constructor() {
     if (process.env.MARATHON_SQLITE_PATH) {
@@ -63,6 +64,7 @@ class DatabaseStore {
       `);
     }
     this.data = this.loadOrSeed();
+    this.lastCommitted = JSON.stringify(this.data);
     if (process.env.DEMO_MODE !== 'true' && this.data.users.some((user) => user.id === 'usr-admin-1' && user.email === 'director@marathontournaments.gg')) {
       throw new Error('Demo database cannot be used outside demo mode. Choose a separate database for production.');
     }
@@ -142,18 +144,23 @@ class DatabaseStore {
   }
 
   public saveImmediate(dataToSave: DatabaseSchema = this.data): void {
-    const snapshot = JSON.stringify(dataToSave);
-    if (this.sqlite) {
-      this.sqlite.prepare(`
-        INSERT INTO tournament_state (id, snapshot) VALUES (1, ?)
-        ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot
-      `).run(snapshot);
-      return;
+    try {
+      const snapshot = JSON.stringify(dataToSave);
+      if (this.sqlite) {
+        this.sqlite.prepare(`
+          INSERT INTO tournament_state (id, snapshot) VALUES (1, ?)
+          ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot
+        `).run(snapshot);
+      } else {
+        const stagingFile = `${DB_FILE}.${process.pid}.tmp`;
+        fs.writeFileSync(stagingFile, snapshot, { encoding: 'utf-8', mode: 0o600 });
+        fs.renameSync(stagingFile, DB_FILE);
+      }
+      this.lastCommitted = snapshot;
+    } catch (error) {
+      if (this.lastCommitted) this.data = JSON.parse(this.lastCommitted);
+      throw error;
     }
-
-    const stagingFile = `${DB_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(stagingFile, snapshot, { encoding: 'utf-8', mode: 0o600 });
-    fs.renameSync(stagingFile, DB_FILE);
   }
 
   private createSeedData(): DatabaseSchema {
