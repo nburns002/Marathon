@@ -1,4 +1,5 @@
 import { db } from './db';
+import { isConfirmedRegistration } from './paymentService';
 import { Tournament, Team, User, TournamentRosterMember } from '../src/types';
 
 export interface EligibilityResult {
@@ -57,7 +58,7 @@ export function validateTournamentRegistrationEligibility(
   const now = new Date();
   if (tournament.registrationCloseAt) {
     const closeTime = new Date(tournament.registrationCloseAt);
-    if (now.getTime() > closeTime.getTime()) {
+    if (now.getTime() >= closeTime.getTime()) {
       return {
         eligible: false,
         error: `Tournament registration closed on ${closeTime.toUTCString()}.`
@@ -115,7 +116,7 @@ export function validateTournamentRegistrationEligibility(
     if (!usr.bungieId || !validateBungieIdFormat(usr.bungieId)) {
       return {
         eligible: false,
-        error: `Player ${usr.displayName || usr.username} does not have a valid Bungie ID (format: Name#1234). Both Bungie ID format and linked status are required.`
+        error: `Player ${usr.displayName || usr.username} does not have a valid Bungie ID (format: Name#1234).`
       };
     }
   }
@@ -132,7 +133,7 @@ export function validateTournamentRegistrationEligibility(
 
   // Retrieve all existing confirmed registrations for this tournament
   const existingRegistrations = db.data.tournamentRegistrations.filter(
-    (r) => r.tournamentId === tournament.id && r.status === 'REGISTERED' && r.paymentStatus === 'PAID'
+    (r) => r.tournamentId === tournament.id && isConfirmedRegistration(r)
   );
 
   // 10. Tournament registered team count is below maxTeams

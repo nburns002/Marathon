@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { X, Lock, Mail, User as UserIcon, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -20,7 +20,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [bungieId, setBungieId] = useState('');
   const [password, setPassword] = useState('');
 
-  if (!isOpen) return null;
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (isOpen) dialogRef.current?.showModal();
+    else dialogRef.current?.close();
+  }, [isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,12 +73,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <dialog ref={dialogRef} aria-labelledby="auth-title" onCancel={onClose} className="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl bg-transparent text-slate-200 backdrop:bg-black/80 backdrop:backdrop-blur-sm">
       <div className="relative w-full max-w-md bg-[#0d131f] border border-[#232f48] rounded-2xl shadow-2xl p-6 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-[#1b263b] mb-5">
           <div>
-            <h3 className="text-lg font-display font-bold text-white uppercase tracking-wider">
+            <h3 id="auth-title" className="text-lg font-display font-bold text-white uppercase tracking-wider">
               {isRegister ? 'Create Competitor Account' : 'Sign In to Marathon Arena'}
             </h3>
             <p className="text-xs text-slate-400">
@@ -82,7 +86,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             </p>
           </div>
           <button
-            onClick={onClose}
+            type="button" aria-label="Close sign-in dialog" onClick={onClose}
             className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -90,7 +94,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         </div>
 
         {error && (
-          <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-start gap-2 text-xs text-red-300">
+          <div role="alert" className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex items-start gap-2 text-xs text-red-300">
             <ShieldAlert className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
             <span>{error}</span>
           </div>
@@ -98,10 +102,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
         <form onSubmit={handleSubmit} className="space-y-3.5">
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">Email or Username</label>
+            <label className="block text-xs font-semibold text-slate-300 mb-1" htmlFor="auth-email">{isRegister ? 'Email' : 'Email or Username'}</label>
             <div className="relative">
               <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input
+                id="auth-email"
                 type="text"
                 required
                 value={email}
@@ -115,10 +120,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           {isRegister && (
             <>
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Account Username</label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1" htmlFor="auth-username">Account Username</label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
+                  <input id="auth-username"
                     type="text"
                     required
                     value={username}
@@ -130,11 +135,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label className="block text-xs font-semibold text-slate-300 mb-1" htmlFor="auth-bungieId">
                   Marathon Bungie ID <span className="text-amber-400">*</span>
                 </label>
                 <div className="relative">
-                  <input
+                  <input id="auth-bungieId"
                     type="text"
                     required
                     value={bungieId}
@@ -149,8 +154,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Display Name (Optional)</label>
-                <input
+                <label className="block text-xs font-semibold text-slate-300 mb-1" htmlFor="auth-displayName">Display Name (Optional)</label>
+                <input id="auth-displayName"
                   type="text"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
@@ -162,10 +167,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           )}
 
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">Password</label>
+            <label className="block text-xs font-semibold text-slate-300 mb-1" htmlFor="auth-password">Password</label>
             <div className="relative">
               <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <input
+              <input id="auth-password"
                 type="password"
                 required
                 value={password}
@@ -215,6 +220,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };

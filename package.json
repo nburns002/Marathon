@@ -8,7 +8,7 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.cjs",
-    "test": "JWT_SECRET=marathon_test_suite_secure_jwt_secret_32_characters tsx --test tests/**/*.test.ts",
+    "test": "JWT_SECRET=marathon_test_suite_secure_jwt_secret_32_characters tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -25,6 +25,8 @@
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "express-rate-limit": "8",
+    "helmet": "8",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",

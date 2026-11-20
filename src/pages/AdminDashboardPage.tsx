@@ -1,3 +1,4 @@
+import { isEvidenceUrl } from '../../server/evidenceUrl';
 import React, { useState, useEffect } from 'react';
 import {
   Shield,
@@ -36,6 +37,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
     systemAuditLogs: []
   });
   const [loading, setLoading] = useState(true);
+  const [operatorError, setOperatorError] = useState('');
+  const [updatingTicket, setUpdatingTicket] = useState<string | null>(null);
 
   // Dispute Resolution Form State
   const [resolvingDisputeId, setResolvingDisputeId] = useState<string | null>(null);
@@ -64,6 +67,9 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
         fetch('/api/admin/audit-logs', { headers: { Authorization: `Bearer ${token}` } })
       ]);
 
+      if ([dashRes, dispRes, tickRes, matchRes, auditRes].some((response) => !response.ok)) {
+        setOperatorError('Some administrator data could not be refreshed.');
+      }
       if (dashRes.ok) {
         const dashData = await dashRes.json();
         setMetrics(dashData.metrics);
@@ -84,8 +90,8 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
         const auditData = await auditRes.json();
         setAuditLogs(auditData);
       }
-    } catch (err) {
-      console.error('Error fetching admin data:', err);
+    } catch {
+      setOperatorError('Could not reach the administrator API.');
     } finally {
       setLoading(false);
     }
@@ -145,20 +151,23 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
     }
   };
 
-  const handleUpdateTicketStatus = async (ticketId: string, status: string, notes?: string) => {
+  const handleUpdateTicketStatus = async (ticketId: string, status: AdminTicket['status']) => {
     if (!token) return;
+    setOperatorError('');
+    setUpdatingTicket(ticketId);
     try {
-      await fetch(`/api/admin/tickets/${ticketId}/update-status`, {
+      const response = await fetch(`/api/admin/tickets/${ticketId}/update-status`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ status, resolutionNotes: notes })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ status })
       });
-      fetchAdminData();
-    } catch (err) {
-      console.error('Ticket status update error:', err);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not update the referee ticket.');
+      setTickets((current) => current.map((ticket) => ticket.id === ticketId ? result.ticket : ticket));
+    } catch (error) {
+      setOperatorError(error instanceof Error ? error.message : 'Could not update the referee ticket.');
+    } finally {
+      setUpdatingTicket(null);
     }
   };
 
@@ -175,6 +184,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
 
   return (
     <div className="space-y-8">
+      {operatorError && <p role="alert" className="rounded border border-red-400/40 p-3 text-sm text-red-300">{operatorError}</p>}
       {/* Top Banner */}
       <div className="p-6 rounded-3xl bg-gradient-to-r from-[#181220] via-[#120f1c] to-[#0f1422] border border-red-500/40 shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
@@ -307,7 +317,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                       </div>
                       {((d.evidenceUrls && d.evidenceUrls.length > 0) || d.evidenceUrl) && (
                         <div className="mt-2 space-y-1">
-                          {(d.evidenceUrls || [d.evidenceUrl]).filter(Boolean).map((url: string, idx: number) => (
+                          {(d.evidenceUrls || [d.evidenceUrl]).filter(isEvidenceUrl).map((url: string, idx: number) => (
                             <a
                               key={idx}
                               href={url}
@@ -337,7 +347,7 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                     </div>
                   </div>
 
-                  {d.status === 'OPEN' && (
+                  {(d.status === 'OPEN' || d.status === 'INVESTIGATING') && (
                     <div className="pt-2">
                       <button
                         onClick={() => {
@@ -401,13 +411,22 @@ export const AdminDashboardPage: React.FC<AdminDashboardPageProps> = ({ onSelect
                     </button>
                   )}
 
-                  {t.status === 'OPEN' && (
-                    <button
-                      onClick={() => handleUpdateTicketStatus(t.id, 'RESOLVED', 'Resolved by Referee in Match Chat')}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold font-display uppercase tracking-wider"
-                    >
-                      Mark Resolved
-                    </button>
+                  {t.status !== 'RESOLVED' && t.status !== 'DISMISSED' && (
+                    <label className="text-xs text-slate-300">
+                      Ticket status
+                      <select
+                        className="ml-2 rounded bg-slate-800 p-1 text-white"
+                        value={t.status}
+                        disabled={updatingTicket === t.id}
+                        onChange={(event) => handleUpdateTicketStatus(t.id, event.target.value as AdminTicket['status'])}
+                      >
+                        <option value="OPEN">Open</option>
+                        <option value="CLAIMED">Claimed</option>
+                        <option value="INVESTIGATING">Investigating</option>
+                        <option value="RESOLVED">Resolved</option>
+                        <option value="DISMISSED">Dismissed</option>
+                      </select>
+                    </label>
                   )}
                 </div>
               </div>

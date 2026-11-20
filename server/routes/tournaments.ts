@@ -1,22 +1,24 @@
 import { Router, Response } from 'express';
+import { getRegistrationCheckout, isConfirmedRegistration } from '../paymentService';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, requireAdmin, optionalAuth } from '../middleware';
 import { generateSingleEliminationBracket, calculateTournamentCurrentRound, isDownstreamMatchMateriallyStarted } from '../bracket';
-import { TournamentRegistration, TournamentRegistrationDTO, TournamentDetailResponse } from '../../src/types';
+import { Tournament, TournamentRegistration, TournamentRegistrationDTO, TournamentDetailResponse } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 import { validateTournamentRegistrationEligibility } from '../registrationService';
 import { buildViewerContext, serializeMatchForViewer } from '../serializer';
 
 const router = Router();
 
-export function formatTournamentDTO(tournament: any, registeredCount: number) {
+export function formatTournamentDTO(tournament: Tournament, registeredCount: number) {
   return {
     ...tournament,
     registeredCount,
     name: tournament.title,
     mapName: tournament.map,
     entryFeeUsd: tournament.entryFee,
+    checkoutMode: getRegistrationCheckout(tournament.entryFee),
     prizePoolUsd: tournament.prizePool,
     currentTeamCount: registeredCount,
     startsAt: tournament.tournamentStartAt,
@@ -26,11 +28,50 @@ export function formatTournamentDTO(tournament: any, registeredCount: number) {
   };
 }
 
+router.post('/', requireAuth, requireAdmin, (req: AuthenticatedRequest, res) => {
+  const { title, description, registrationCloseAt, tournamentStartAt, maxTeams, featuredObjectiveTitle,
+    featuredObjectiveDescription, featuredObjectivePoints, prizePool } = req.body ?? {};
+  const close = typeof registrationCloseAt === 'string' ? Date.parse(registrationCloseAt) : NaN;
+  const start = typeof tournamentStartAt === 'string' ? Date.parse(tournamentStartAt) : NaN;
+  const now = new Date();
+  if (typeof title !== 'string' || !title.trim() || title.length > 100 ||
+    typeof description !== 'string' || description.length > 2000 ||
+    typeof featuredObjectiveTitle !== 'string' || !featuredObjectiveTitle.trim() || featuredObjectiveTitle.length > 100 ||
+    typeof featuredObjectiveDescription !== 'string' || featuredObjectiveDescription.length > 1000 ||
+    !Number.isInteger(featuredObjectivePoints) || featuredObjectivePoints < 0 || featuredObjectivePoints > 100 ||
+    !Number.isInteger(maxTeams) || maxTeams < 2 || maxTeams > 64 ||
+    !Number.isInteger(prizePool) || prizePool < 0 || prizePool > 1_000_000 ||
+    !Number.isFinite(close) || !Number.isFinite(start) || close <= now.getTime() || start < close) {
+    return res.status(400).json({ error: 'Check the title, schedule, team capacity, prize pool, and featured objective.' });
+  }
+
+  const timestamp = now.toISOString();
+  const tournament: Tournament = {
+    id: uuidv4(), title: title.trim(), description: description.trim(), map: 'Cryo Archive',
+    format: '3-player Public-Lobby Score Race', runsPerMatch: 2, entryFee: 0, prizePool, maxTeams,
+    featuredObjectiveTitle: featuredObjectiveTitle.trim(),
+    featuredObjectiveDescription: featuredObjectiveDescription.trim(), featuredObjectivePoints,
+    registrationOpenAt: timestamp, registrationCloseAt: new Date(close).toISOString(),
+    tournamentStartAt: new Date(start).toISOString(), readyWindowMinutes: 10, matchWindowMinutes: 75,
+    disputeWindowMinutes: 10, roundIntermissionMinutes: 10, status: 'REGISTRATION_OPEN', currentRound: 1,
+    createdAt: timestamp, updatedAt: timestamp
+  };
+  db.data.tournaments.push(tournament);
+  db.data.auditLogs.push({
+    id: uuidv4(), actorType: 'ADMIN', actorId: req.user!.id, actorName: req.user!.username,
+    action: 'TOURNAMENT_CREATED', entityType: 'TOURNAMENT', entityId: tournament.id,
+    metadata: { maxTeams, registrationCloseAt: tournament.registrationCloseAt }, timestamp
+  });
+  db.save();
+  broadcastEvent('TOURNAMENT_UPDATED', { tournamentId: tournament.id });
+  return res.status(201).json({ tournament: formatTournamentDTO(tournament, 0) });
+});
+
 // GET /api/tournaments - Tournament List
 router.get('/', (req, res) => {
   const tournamentsWithCounts = db.data.tournaments.map((t) => {
     const count = db.data.tournamentRegistrations.filter(
-      (r) => r.tournamentId === t.id && r.status === 'REGISTERED' && r.paymentStatus === 'PAID'
+      (r) => r.tournamentId === t.id && isConfirmedRegistration(r)
     ).length;
     return formatTournamentDTO(t, count);
   });
@@ -45,7 +86,7 @@ router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
   }
 
   const confirmedRegistrations = db.data.tournamentRegistrations.filter(
-    (r) => r.tournamentId === tournament.id && r.status === 'REGISTERED' && r.paymentStatus === 'PAID'
+    (r) => r.tournamentId === tournament.id && isConfirmedRegistration(r)
   );
 
   const bracket = db.data.brackets.find((b) => b.tournamentId === tournament.id);
@@ -87,7 +128,7 @@ router.get('/:id/registry', (req, res) => {
   }
 
   const paidRegistrations = db.data.tournamentRegistrations.filter(
-    (r) => r.tournamentId === tournament.id && r.status === 'REGISTERED' && r.paymentStatus === 'PAID'
+    (r) => r.tournamentId === tournament.id && isConfirmedRegistration(r)
   );
 
   const registryItems = paidRegistrations.map((reg) => {
@@ -113,7 +154,7 @@ router.get('/:id/registry', (req, res) => {
 // POST /api/tournaments/:id/join-check - Eligibility check using centralized validation service
 router.post('/:id/join-check', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
-  const { teamId } = req.body;
+  const { teamId } = req.body ?? {};
 
   if (!teamId) {
     return res.status(400).json({ error: 'Please select a team to check registration eligibility.' });
@@ -139,7 +180,7 @@ router.post('/:id/join-check', requireAuth, (req: AuthenticatedRequest, res: Res
 function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) {
   const user = req.user!;
   const tournamentId = req.params.id;
-  const { teamId, termsAccepted, refundPolicyAccepted } = req.body;
+  const { teamId, termsAccepted, refundPolicyAccepted } = req.body ?? {};
 
   if (!teamId) {
     return res.status(400).json({ error: 'Please select a team to register.' });
@@ -158,6 +199,10 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
   }
 
   const tournament = eligibility.tournament!;
+  const checkout = getRegistrationCheckout(tournament.entryFee);
+  if (checkout === 'UNAVAILABLE') {
+    return res.status(409).json({ error: 'Paid registration is unavailable until a payment provider is configured.' });
+  }
   const team = eligibility.team!;
   const rosterSnapshot = eligibility.rosterSnapshot!;
   const isoNow = new Date().toISOString();
@@ -170,9 +215,7 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
     teamName: team.name,
     captainUserId: team.captainUserId,
     status: 'REGISTERED',
-    // In demo mode this is a simulated checkout transaction. If real payments are enabled,
-    // PAID is only set upon webhook confirmation from the payment provider.
-    paymentStatus: 'PAID',
+    paymentStatus: checkout,
     rosterSnapshot,
     registeredAt: isoNow,
     termsAcceptedAt: isoNow,
@@ -186,14 +229,14 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
     actorType: 'USER',
     actorId: user.id,
     actorName: user.username,
-    action: 'TOURNAMENT_PAID_AND_REGISTERED',
+    action: 'TOURNAMENT_REGISTERED',
     entityType: 'TOURNAMENT',
     entityId: tournament.id,
     metadata: {
       teamId: team.id,
       teamName: team.name,
       entryFee: tournament.entryFee,
-      isSimulatedPayment: true
+      checkout
     },
     timestamp: isoNow
   });
@@ -203,7 +246,7 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
     userId: user.id,
     type: 'REGISTRATION_CONFIRMED',
     title: 'Tournament Registration Confirmed!',
-    content: `Team ${team.name} has been successfully registered for "${tournament.title}". Entry fee ($${tournament.entryFee}) processed (simulated demo mode).`,
+    content: `Team ${team.name} has been successfully registered for "${tournament.title}".${checkout === 'SIMULATED' ? ' Checkout was simulated.' : ''}`,
     linkUrl: `/tournaments/${tournament.id}`,
     read: false,
     createdAt: isoNow
@@ -215,7 +258,7 @@ function handleTournamentRegistration(req: AuthenticatedRequest, res: Response) 
   return res.json({
     success: true,
     registration: newReg,
-    message: `Team ${team.name} successfully registered and entered into the Tournament Registry! (Payment Mode: Simulated Demo)`
+    message: `Team ${team.name} successfully registered and entered into the Tournament Registry!${checkout === 'SIMULATED' ? ' Checkout was simulated.' : ''}`
   });
 }
 
@@ -240,19 +283,19 @@ function handleGenerateBracket(req: AuthenticatedRequest, res: Response) {
   }
 
   // 2. Reject ordinary regeneration once tournament is LIVE unless explicit pre-start reset flag is provided
-  if (tournament.status === 'LIVE' && !req.body.allowPreStartReset) {
+  if (tournament.status === 'LIVE' && req.body?.allowPreStartReset !== true) {
     return res.status(400).json({
       error: 'Tournament is currently LIVE. Generating a new bracket requires an explicit pre-start reset parameter.'
     });
   }
 
   const confirmedRegistrations = db.data.tournamentRegistrations.filter(
-    (r) => r.tournamentId === tournament.id && r.status === 'REGISTERED' && r.paymentStatus === 'PAID'
+    (r) => r.tournamentId === tournament.id && isConfirmedRegistration(r)
   );
 
   if (confirmedRegistrations.length < 2) {
     return res.status(400).json({
-      error: `Cannot generate bracket with only ${confirmedRegistrations.length} team(s). At least 2 paid teams required.`
+      error: `Cannot generate bracket with only ${confirmedRegistrations.length} team(s). At least 2 confirmed teams required.`
     });
   }
 

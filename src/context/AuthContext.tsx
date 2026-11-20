@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { User, Team, TeamInvitation, Notification } from '../types';
 
 interface AuthContextType {
@@ -19,10 +19,8 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('marathon_jwt_token'));
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('marathon_user');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const activeToken = useRef(token);
+  const [user, setUser] = useState<User | null>(null);
   const [primaryTeam, setPrimaryTeam] = useState<Team | null>(null);
   const [userTeams, setUserTeams] = useState<Team[]>([]);
   const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
@@ -34,21 +32,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${authToken}` }
       });
+      if (activeToken.current !== authToken) return;
       if (res.ok) {
         const data = await res.json();
+        if (activeToken.current !== authToken) return;
         setUser(data.user);
         setPrimaryTeam(data.primaryTeam);
         setUserTeams(data.teams || []);
         setInvitations(data.invitations || []);
         setNotifications(data.notifications || []);
-        localStorage.setItem('marathon_user', JSON.stringify(data.user));
-      } else {
+      } else if (res.status === 401 || res.status === 403) {
         logout();
       }
     } catch (err) {
       console.error('Error fetching auth user:', err);
     } finally {
-      setLoading(false);
+      if (activeToken.current === authToken) setLoading(false);
     }
   };
 
@@ -61,14 +60,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = (newToken: string, newUser: User) => {
+    activeToken.current = newToken;
     setToken(newToken);
     setUser(newUser);
     localStorage.setItem('marathon_jwt_token', newToken);
-    localStorage.setItem('marathon_user', JSON.stringify(newUser));
     fetchUserData(newToken);
   };
 
   const logout = () => {
+    activeToken.current = null;
     setToken(null);
     setUser(null);
     setPrimaryTeam(null);

@@ -1,10 +1,11 @@
 import { Router, Response } from 'express';
+import { isConfirmedRegistration } from '../paymentService';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, requireAdmin } from '../middleware';
 import { calculateRunScore, determineMatchWinner, validateScoreInputs } from '../scoring';
 import { advanceMatchWinner, reconcileMatchAdvancement, calculateTournamentCurrentRound } from '../bracket';
-import { AdminAction, AuditLog } from '../../src/types';
+import { AdminAction, AuditLog, Match, User } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 
 const router = Router();
@@ -21,7 +22,7 @@ router.get('/dashboard', requireAuth, requireAdmin, (req, res) => {
   const openDisputes = db.data.matchDisputes.filter((d) => d.status === 'OPEN' || d.status === 'INVESTIGATING');
   const openTickets = db.data.adminTickets.filter((t) => t.status === 'OPEN' || t.status === 'CLAIMED' || t.status === 'INVESTIGATING');
 
-  const totalRegisteredTeams = db.data.tournamentRegistrations.filter((r) => r.status === 'REGISTERED' && r.paymentStatus === 'PAID').length;
+  const totalRegisteredTeams = db.data.tournamentRegistrations.filter((r) => isConfirmedRegistration(r)).length;
 
   return res.json({
     metrics: {
@@ -57,8 +58,8 @@ router.get('/disputes', requireAuth, requireAdmin, (req, res) => {
 
 // Authoritative Shared Admin Score Correction Function
 function applyAuthoritativeAdminScoreCorrection(params: {
-  match: any;
-  admin: any;
+  match: Match;
+  admin: User;
   teamId: string;
   runNumber: any;
   runnerKills: any;
@@ -115,7 +116,7 @@ function applyAuthoritativeAdminScoreCorrection(params: {
     extractedCredits,
     playersExtracted: playersExtracted as 0 | 1 | 2 | 3,
     objectiveCompleted,
-    objectivePointsValue: tournament?.featuredObjectivePoints || 5
+    objectivePointsValue: tournament?.featuredObjectivePoints ?? 5
   });
 
   const isoNow = new Date().toISOString();
@@ -123,6 +124,7 @@ function applyAuthoritativeAdminScoreCorrection(params: {
   const targetSubBackup = { ...targetSub };
   const prevFinalScoreA = match.finalScoreA;
   const prevFinalScoreB = match.finalScoreB;
+  const previousUpdatedAt = match.updatedAt;
 
   Object.assign(targetSub, {
     ...calculated,
@@ -173,6 +175,7 @@ function applyAuthoritativeAdminScoreCorrection(params: {
         Object.assign(targetSub, targetSubBackup);
         match.finalScoreA = prevFinalScoreA;
         match.finalScoreB = prevFinalScoreB;
+        match.updatedAt = previousUpdatedAt;
         return { success: false, error: reconcileRes.error };
       }
 
@@ -201,7 +204,7 @@ function applyAuthoritativeAdminScoreCorrection(params: {
         match.winnerTeamId = null;
         match.loserTeamId = null;
         match.matchStatus = 'ADMIN_REVIEW';
-        match.adminNotes = 'Tie detected across all metrics following score correction. Tiebreaker run required.';
+        match.adminNotes = 'Tie detected across all metrics following score correction. Referee ruling required.';
         if (!match.nextMatchId && tournament) {
           tournament.championTeamId = null;
           tournament.championTeamName = null;
@@ -220,6 +223,9 @@ function applyAuthoritativeAdminScoreCorrection(params: {
       tournament.currentRound || 1
     );
   }
+
+  const storedSubmission = db.data.runSubmissions.findIndex((submission) => submission.id === targetSub.id);
+  if (storedSubmission >= 0) db.data.runSubmissions[storedSubmission] = targetSub;
 
   const targetTeamName = isSlotA ? match.teamAName : match.teamBName;
 
@@ -285,8 +291,9 @@ router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: Authentica
     });
   }
 
-  const { resolution, ruling, newScoreData, reason } = req.body;
-  if (!resolution || !reason) {
+  const { resolution, ruling, newScoreData, reason } = req.body ?? {};
+  if (typeof resolution !== 'string' || !resolution.trim() || resolution.length > 2000 ||
+      typeof reason !== 'string' || !reason.trim() || reason.length > 2000) {
     return res.status(400).json({ error: 'Resolution details and written reason are required.' });
   }
 
@@ -351,7 +358,7 @@ router.post('/disputes/:id/resolve', requireAuth, requireAdmin, (req: Authentica
   });
 
   db.save();
-  broadcastEvent('DISPUTE_RESOLVED', { disputeId: dispute.id, matchId: dispute.matchId });
+  broadcastEvent('DISPUTE_RESOLVED', { matchId: dispute.matchId });
   broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });
 
   return res.json({ success: true, dispute, message: 'Dispute resolved successfully.' });
@@ -371,21 +378,31 @@ router.post('/tickets/:id/update-status', requireAuth, requireAdmin, (req: Authe
     return res.status(404).json({ error: 'Ticket not found.' });
   }
 
-  const { status, resolutionNotes } = req.body;
+  const { status, resolutionNotes } = req.body ?? {};
   const validTicketStatuses = ['OPEN', 'CLAIMED', 'INVESTIGATING', 'RESOLVED', 'DISMISSED'];
-  if (!status || !validTicketStatuses.includes(status)) {
-    return res.status(400).json({
-      error: `Invalid ticket status '${status}'. Must be one of: ${validTicketStatuses.join(', ')}.`
-    });
+  if (!validTicketStatuses.includes(status) ||
+      (resolutionNotes !== undefined && (typeof resolutionNotes !== 'string' || resolutionNotes.length > 2000))) {
+    return res.status(400).json({ error: 'Enter a valid ticket status and optional resolution notes.' });
+  }
+  if (ticket.status === status) return res.json({ success: true, ticket });
+  if (ticket.status === 'RESOLVED' || ticket.status === 'DISMISSED') {
+    return res.status(409).json({ error: 'This ticket is already closed.' });
   }
 
+  const previousStatus = ticket.status;
   ticket.status = status;
   ticket.assignedAdminId = admin.id;
   ticket.assignedAdminName = admin.displayName || admin.username;
-  if (resolutionNotes) ticket.resolutionNotes = resolutionNotes.trim();
+  if (resolutionNotes?.trim()) ticket.resolutionNotes = resolutionNotes.trim();
   ticket.updatedAt = new Date().toISOString();
+  db.data.auditLogs.push({
+    id: uuidv4(), actorType: 'ADMIN', actorId: admin.id, actorName: admin.username,
+    action: 'ADMIN_TICKET_STATUS_CHANGED', entityType: 'MATCH', entityId: ticket.matchId ?? ticket.id,
+    metadata: { ticketId: ticket.id, previousStatus, status }, timestamp: ticket.updatedAt
+  });
 
   db.save();
+  broadcastEvent('ADMIN_TICKET_UPDATED', {});
   return res.json({ success: true, ticket });
 });
 
@@ -398,7 +415,7 @@ router.post('/matches/:id/override-score', requireAuth, requireAdmin, (req: Auth
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = req.body;
+  const { teamId, runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, reason } = req.body ?? {};
 
   const result = applyAuthoritativeAdminScoreCorrection({
     match,
@@ -431,7 +448,7 @@ router.post('/matches/:id/control-timer', requireAuth, requireAdmin, (req: Authe
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { action, reason } = req.body;
+  const { action, reason } = req.body ?? {};
   const isoNow = new Date().toISOString();
   const tourn = db.data.tournaments.find((t) => t.id === match.tournamentId);
 
@@ -587,8 +604,8 @@ router.post('/matches/:id/override-winner', requireAuth, requireAdmin, (req: Aut
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { winnerTeamId, reason } = req.body;
-  if (!winnerTeamId || !reason || !reason.trim()) {
+  const { winnerTeamId, reason } = req.body ?? {};
+  if (typeof winnerTeamId !== 'string' || typeof reason !== 'string' || !reason.trim() || reason.length > 2000) {
     return res.status(400).json({ error: 'Winner team ID and written reason are required.' });
   }
 
@@ -597,6 +614,14 @@ router.post('/matches/:id/override-winner', requireAuth, requireAdmin, (req: Aut
     return res.status(400).json({
       error: `Invalid winner team ID '${winnerTeamId}'. Winner must be either Team A (${match.teamAId}) or Team B (${match.teamBId}).`
     });
+  }
+
+  if (match.isBye || !match.teamAId || !match.teamBId ||
+      !['RESULT_PENDING', 'ADMIN_REVIEW', 'FINAL', 'FORFEIT', 'DOUBLE_FORFEIT'].includes(match.matchStatus)) {
+    return res.status(409).json({ error: 'Winner correction is available only for a result awaiting review or an existing result.' });
+  }
+  if (match.matchStatus === 'FINAL' && match.winnerTeamId === winnerTeamId) {
+    return res.json({ success: true, match, message: 'This team is already the finalized winner.' });
   }
 
   const winningTeamName = winnerTeamId === match.teamAId ? match.teamAName : match.teamBName;

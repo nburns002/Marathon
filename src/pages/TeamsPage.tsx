@@ -10,7 +10,7 @@ import {
   Mail,
   AlertCircle
 } from 'lucide-react';
-import { Team, TeamInvitation } from '../types';
+import { PublicUser } from '../types';
 import { useAuth } from '../context/AuthContext';
 
 export const TeamsPage: React.FC = () => {
@@ -29,6 +29,59 @@ export const TeamsPage: React.FC = () => {
   const [inviteError, setInviteError] = useState('');
   const [inviteSuccess, setInviteSuccess] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
+
+  const [rosterFeedback, setRosterFeedback] = useState<{ error: boolean; message: string } | null>(null);
+  const [changingRoster, setChangingRoster] = useState(false);
+
+  const [playerResults, setPlayerResults] = useState<PublicUser[]>([]);
+
+  useEffect(() => {
+    refreshUser();
+  }, [token]);
+
+  useEffect(() => {
+    setPlayerResults([]);
+    const query = inviteIdentifier.trim();
+    if (!token || !inviteTeamId || query.length < 2 || query.includes('@')) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/teams/search/users?q=${encodeURIComponent(query)}`, {
+          headers: { Authorization: `Bearer ${token}` }, signal: controller.signal
+        });
+        if (!response.ok || controller.signal.aborted) return;
+        const { users }: { users: PublicUser[] } = await response.json();
+        if (!controller.signal.aborted) setPlayerResults(users.filter((player) => player.username !== query));
+      } catch {
+        // Exact-identifier invitations remain available when search is unavailable.
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [inviteIdentifier, inviteTeamId, token]);
+
+  const removeMember = async (teamId: string, memberId: string) => {
+    if (!token || changingRoster) return;
+    const leaving = memberId === user?.id;
+    if (!window.confirm(leaving ? 'Leave this team?' : 'Remove this player from the team?')) return;
+    setChangingRoster(true);
+    setRosterFeedback(null);
+    try {
+      const response = await fetch(`/api/teams/${teamId}/members/${memberId}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${token}` }
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not update the roster.');
+      await refreshUser();
+      setRosterFeedback({ error: false, message: result.message });
+    } catch (error) {
+      setRosterFeedback({ error: true, message: error instanceof Error ? error.message : 'Could not update the roster.' });
+    } finally {
+      setChangingRoster(false);
+    }
+  };
 
   const handleCreateTeam = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,18 +148,19 @@ export const TeamsPage: React.FC = () => {
 
   const handleRespondInvitation = async (invitationId: string, action: 'ACCEPT' | 'DECLINE') => {
     if (!token) return;
+    setRosterFeedback(null);
     try {
-      await fetch(`/api/teams/invitations/${invitationId}/respond`, {
+      const response = await fetch(`/api/teams/invitations/${invitationId}/respond`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ action })
       });
-      refreshUser();
-    } catch (err) {
-      console.error('Invite response error:', err);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not update the invitation.');
+      await refreshUser();
+      setRosterFeedback({ error: false, message: result.message });
+    } catch (error) {
+      setRosterFeedback({ error: true, message: error instanceof Error ? error.message : 'Could not update the invitation.' });
     }
   };
 
@@ -119,7 +173,7 @@ export const TeamsPage: React.FC = () => {
             Competitive Roster Management
           </h1>
           <p className="text-slate-400 text-xs sm:text-sm mt-1">
-            Build your 3-player Marathon squad. Snapshotted on tournament registration with verified Bungie IDs.
+            Build your 3-player Marathon squad. Snapshotted on tournament registration with valid Bungie IDs.
           </p>
         </div>
 
@@ -172,6 +226,11 @@ export const TeamsPage: React.FC = () => {
       )}
 
       {/* Teams Grid */}
+      {rosterFeedback && (
+        <p role={rosterFeedback.error ? 'alert' : 'status'} className={rosterFeedback.error ? 'text-red-300' : 'text-emerald-300'}>
+          {rosterFeedback.message}
+        </p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {userTeams.map((team) => {
           const isCap = (team.captainUserId || (team as any).captainId) === user?.id;
@@ -224,7 +283,7 @@ export const TeamsPage: React.FC = () => {
                   {membersList.map((member, i) => (
                     <div
                       key={member.userId || member.id || i}
-                      className="flex items-center justify-between p-2.5 rounded-xl bg-[#131b2c] border border-[#1d283e] text-xs"
+                      className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-[#131b2c] border border-[#1d283e] text-xs"
                     >
                       <div className="flex items-center gap-2">
                         {member.role === 'CAPTAIN' ? (
@@ -240,7 +299,12 @@ export const TeamsPage: React.FC = () => {
                         <span className="font-mono text-amber-300 text-[11px]">
                           {member.user?.bungieId || (member as any).bungieId || ''}
                         </span>
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                        {member.role !== 'CAPTAIN' && (isCap || member.userId === user?.id) && (
+                          <button type="button" disabled={changingRoster} className="text-red-300 underline disabled:opacity-50"
+                            onClick={() => removeMember(team.id, member.userId)}>
+                            {member.userId === user?.id ? 'Leave team' : 'Remove'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -264,7 +328,7 @@ export const TeamsPage: React.FC = () => {
                 ) : (
                   <div className="flex items-center justify-between text-xs text-slate-400">
                     <span className="flex items-center gap-1 text-emerald-400 font-mono">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Eligible for Tournament Entry
+                      {isRosterFull ? "Roster complete" : "Roster needs more players"}
                     </span>
                   </div>
                 )}
@@ -330,7 +394,7 @@ export const TeamsPage: React.FC = () => {
               </div>
 
               <div className="p-3 rounded-xl bg-[#121929] border border-[#1f2b44] text-[11px] text-slate-400">
-                You will become Team Captain. You can then invite 2 additional verified players to complete the 3-man roster.
+                You will become Team Captain. You can then invite 2 additional players to complete the 3-man roster.
               </div>
 
               <button
@@ -372,12 +436,13 @@ export const TeamsPage: React.FC = () => {
 
             <form onSubmit={handleInviteMember} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                <label htmlFor="invite-player" className="block text-xs font-semibold text-slate-300 mb-1">
                   Player Username, Email, or Bungie ID
                 </label>
                 <input
                   type="text"
                   required
+                  id="invite-player"
                   value={inviteIdentifier}
                   onChange={(e) => setInviteIdentifier(e.target.value)}
                   placeholder="e.g. ArachneQueen or player@outlook.com"
@@ -385,6 +450,18 @@ export const TeamsPage: React.FC = () => {
                 />
               </div>
 
+              {playerResults.length > 0 && (
+                <ul aria-label="Matching players" className="max-h-36 space-y-1 overflow-y-auto">
+                  {playerResults.map((player) => (
+                    <li key={player.id}>
+                      <button type="button" className="w-full rounded bg-slate-800 px-3 py-2 text-left text-sm hover:bg-slate-700"
+                        onClick={() => setInviteIdentifier(player.username)}>
+                        {player.displayName} <span className="text-amber-300">{player.bungieId}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <button
                 type="submit"
                 disabled={inviteLoading || !inviteIdentifier.trim()}

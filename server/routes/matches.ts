@@ -1,10 +1,11 @@
 import { Router, Response } from 'express';
+import { isConfirmedRegistration } from '../paymentService';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db';
 import { AuthenticatedRequest, requireAuth, optionalAuth } from '../middleware';
 import { parseScoreCommandStrict } from '../scoring';
 import { calculateTournamentCurrentRound } from '../bracket';
-import { MatchEvidence, MatchDispute, AdminTicket } from '../../src/types';
+import { MatchEvidence, MatchDispute, AdminTicket, MatchMessage } from '../../src/types';
 import { broadcastEvent } from '../timerWorker';
 import {
   buildViewerContext,
@@ -13,6 +14,7 @@ import {
   serializeEvidenceForViewer,
   serializeAdminTicketsForViewer
 } from '../serializer';
+import { isEvidenceUrl } from '../evidenceUrl';
 import { submitScoreAuthoritative } from '../scoreSubmissionService';
 import { formatTournamentDTO } from './tournaments';
 
@@ -55,7 +57,7 @@ router.get('/:id', optionalAuth, (req: AuthenticatedRequest, res: Response) => {
   const tournament = db.data.tournaments.find((t) => t.id === match.tournamentId);
   const regCount = tournament
     ? db.data.tournamentRegistrations.filter(
-        (r) => r.tournamentId === tournament.id && r.status === 'REGISTERED' && r.paymentStatus === 'PAID'
+        (r) => r.tournamentId === tournament.id && isConfirmedRegistration(r)
       ).length
     : 0;
   const formattedTournament = tournament ? formatTournamentDTO(tournament, regCount) : null;
@@ -138,6 +140,10 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
     });
   }
 
+  if (match.readyDeadlineAt && Date.now() >= Date.parse(match.readyDeadlineAt)) {
+    return res.status(400).json({ error: 'The Ready Check deadline has passed.' });
+  }
+
   const teamA = match.teamAId ? db.data.teams.find((t) => t.id === match.teamAId) : null;
   const teamB = match.teamBId ? db.data.teams.find((t) => t.id === match.teamBId) : null;
 
@@ -148,22 +154,31 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
     ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
     : null;
 
-  const isCaptainA = (teamA && teamA.captainUserId === user.id) || (regA && regA.captainUserId === user.id);
-  const isCaptainB = (teamB && teamB.captainUserId === user.id) || (regB && regB.captainUserId === user.id);
+  const isCaptainA = (regA?.captainUserId ?? teamA?.captainUserId) === user.id;
+  const isCaptainB = (regB?.captainUserId ?? teamB?.captainUserId) === user.id;
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
   if (!isCaptainA && !isCaptainB && !isAdmin) {
     return res.status(403).json({ error: 'Only the Team Captain may check in the team.' });
   }
 
+  const requestedSlot = req.body?.teamSlot;
+  const slot = isCaptainA ? 'A' : isCaptainB ? 'B' : requestedSlot;
+  if ((slot !== 'A' && slot !== 'B') || (slot === 'A' ? !match.teamAId : !match.teamBId)) {
+    return res.status(400).json({ error: 'Choose a participating team for Ready Check.' });
+  }
+  if (slot === 'A' ? match.teamAReady : match.teamBReady) {
+    return res.json({ success: true, match: serializeMatchForViewer(match, buildViewerContext(user, match)) });
+  }
+
   const isoNow = new Date().toISOString();
   let teamReadyName = '';
 
-  if (isCaptainA || (isAdmin && req.body.teamSlot === 'A')) {
+  if (slot === 'A') {
     match.teamAReady = true;
     match.teamAReadyAt = isoNow;
     teamReadyName = match.teamAName || 'Team A';
-  } else if (isCaptainB || (isAdmin && req.body.teamSlot === 'B')) {
+  } else {
     match.teamBReady = true;
     match.teamBReadyAt = isoNow;
     teamReadyName = match.teamBName || 'Team B';
@@ -226,7 +241,7 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
 
   return res.json({
     success: true,
-    match,
+    match: serializeMatchForViewer(match, buildViewerContext(user, match)),
     message: `${teamReadyName} is now marked READY.`
   });
 });
@@ -235,7 +250,7 @@ router.post('/:id/ready', requireAuth, (req: AuthenticatedRequest, res: Response
 function handleScoreSubmission(req: AuthenticatedRequest, res: Response) {
   const user = req.user!;
   const matchId = req.params.id;
-  const { runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, evidenceUrl, teamId } = req.body;
+  const { runNumber, runnerKills, extractedCredits, playersExtracted, objectiveCompleted, evidenceUrl, teamId } = req.body ?? {};
 
   const result = submitScoreAuthoritative({
     matchId,
@@ -254,7 +269,8 @@ function handleScoreSubmission(req: AuthenticatedRequest, res: Response) {
     return res.status(result.statusCode || 400).json({ error: result.error });
   }
 
-  return res.json(result);
+  const match = result.match!;
+  return res.json({ ...result, match: serializeMatchForViewer(match, buildViewerContext(user, match)) });
 }
 
 // Support BOTH /submit-score AND canonical /score endpoints
@@ -270,28 +286,13 @@ router.post('/:id/messages', requireAuth, (req: AuthenticatedRequest, res: Respo
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { message } = req.body;
-  if (!message || !message.trim()) {
-    return res.status(400).json({ error: 'Message cannot be empty.' });
+  const { message } = req.body ?? {};
+  if (typeof message !== 'string' || !message.trim() || message.length > 2000) {
+    return res.status(400).json({ error: 'Enter a message of up to 2,000 characters.' });
   }
 
   // Access control: Only snapshotted tournament roster participants and admins may post chat
-  const regA = match.teamAId
-    ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamAId)
-    : null;
-  const regB = match.teamBId
-    ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
-    : null;
-
-  const isRosterA =
-    (regA?.rosterSnapshot && regA.rosterSnapshot.some((m) => m.userId === user.id)) ||
-    regA?.captainUserId === user.id ||
-    (match.teamAId ? db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id) : false);
-
-  const isRosterB =
-    (regB?.rosterSnapshot && regB.rosterSnapshot.some((m) => m.userId === user.id)) ||
-    regB?.captainUserId === user.id ||
-    (match.teamBId ? db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id) : false);
+  const { isRosterA, isRosterB, teamId: userTeamId } = buildViewerContext(user, match);
 
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
@@ -300,7 +301,6 @@ router.post('/:id/messages', requireAuth, (req: AuthenticatedRequest, res: Respo
   }
 
   const trimmed = message.trim();
-  const userTeamId = isRosterA ? match.teamAId || undefined : isRosterB ? match.teamBId || undefined : undefined;
   const userTeamName = isRosterA ? match.teamAName || undefined : isRosterB ? match.teamBName || undefined : undefined;
   const isoNow = new Date().toISOString();
 
@@ -336,7 +336,7 @@ router.post('/:id/messages', requireAuth, (req: AuthenticatedRequest, res: Respo
   }
 
   // Regular chat message
-  const chatMsg = {
+  const chatMsg: MatchMessage = {
     id: uuidv4(),
     matchId: match.id,
     userId: user.id,
@@ -344,14 +344,14 @@ router.post('/:id/messages', requireAuth, (req: AuthenticatedRequest, res: Respo
     userRole: user.role,
     teamId: userTeamId,
     teamName: userTeamName,
-    type: (isAdmin ? 'ADMIN' : 'CHAT') as any,
+    type: isAdmin ? 'ADMIN' : 'CHAT',
     message: trimmed,
     createdAt: isoNow
   };
 
   db.data.matchMessages.push(chatMsg);
   db.save();
-  broadcastEvent('MESSAGE_POSTED', { matchId: match.id, message: chatMsg });
+  broadcastEvent('MESSAGE_POSTED', { matchId: match.id });
 
   return res.json({ success: true, message: chatMsg });
 });
@@ -396,8 +396,8 @@ function handleDispute(req: AuthenticatedRequest, res: Response) {
     ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
     : null;
 
-  const isCaptainA = (teamA && teamA.captainUserId === user.id) || (regA && regA.captainUserId === user.id);
-  const isCaptainB = (teamB && teamB.captainUserId === user.id) || (regB && regB.captainUserId === user.id);
+  const isCaptainA = (regA?.captainUserId ?? teamA?.captainUserId) === user.id;
+  const isCaptainB = (regB?.captainUserId ?? teamB?.captainUserId) === user.id;
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
   if (!isCaptainA && !isCaptainB && !isAdmin) {
@@ -406,9 +406,11 @@ function handleDispute(req: AuthenticatedRequest, res: Response) {
     });
   }
 
-  const { category, description, reason, evidenceUrls, evidenceUrl, runNumber } = req.body;
-  const desc = (description || reason || '').trim();
-  if (!desc) {
+  const { category, description, reason, evidenceUrls, evidenceUrl, runNumber } = req.body ?? {};
+  const suppliedDescription = description || reason;
+  const desc = typeof suppliedDescription === 'string' ? suppliedDescription.trim() : '';
+  if (!desc || desc.length > 2000 || (category !== undefined && (typeof category !== 'string' || category.length > 80)) ||
+      (runNumber != null && ![1, 2, '1', '2'].includes(runNumber))) {
     return res.status(400).json({ error: 'A specific explanation of the discrepancy is required.' });
   }
 
@@ -417,19 +419,13 @@ function handleDispute(req: AuthenticatedRequest, res: Response) {
   const disputedTeamId = isCaptainA ? match.teamBId! : match.teamAId!;
   const disputedTeamName = isCaptainA ? match.teamBName! : match.teamAName!;
 
+  const allEvidence = [...(Array.isArray(evidenceUrls) ? evidenceUrls : [evidenceUrls]), evidenceUrl].filter(Boolean);
+  if (allEvidence.length > 5 || allEvidence.some((url) => !isEvidenceUrl(url))) {
+    return res.status(400).json({ error: 'Supply up to five valid HTTP or HTTPS evidence links.' });
+  }
   match.matchStatus = 'DISPUTED';
   const isoNow = new Date().toISOString();
   match.updatedAt = isoNow;
-
-  let allEvidence: string[] = [];
-  if (Array.isArray(evidenceUrls)) {
-    allEvidence.push(...evidenceUrls.filter(Boolean));
-  } else if (evidenceUrls && typeof evidenceUrls === 'string') {
-    allEvidence.push(evidenceUrls.trim());
-  }
-  if (evidenceUrl && typeof evidenceUrl === 'string' && evidenceUrl.trim()) {
-    allEvidence.push(evidenceUrl.trim());
-  }
 
   const dispute: MatchDispute = {
     id: `disp-${uuidv4().slice(0, 8)}`,
@@ -514,27 +510,13 @@ router.post('/:id/request-admin', requireAuth, (req: AuthenticatedRequest, res: 
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { category, description } = req.body;
-  if (!description || !description.trim()) {
+  const { category, description } = req.body ?? {};
+  if (typeof description !== 'string' || !description.trim() || description.length > 2000 ||
+      (category !== undefined && (typeof category !== 'string' || category.length > 80))) {
     return res.status(400).json({ error: 'Please describe the issue requiring administrator assistance.' });
   }
 
-  const regA = match.teamAId
-    ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamAId)
-    : null;
-  const regB = match.teamBId
-    ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
-    : null;
-
-  const isRosterA =
-    (regA?.rosterSnapshot && regA.rosterSnapshot.some((m) => m.userId === user.id)) ||
-    regA?.captainUserId === user.id ||
-    (match.teamAId ? db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id) : false);
-
-  const isRosterB =
-    (regB?.rosterSnapshot && regB.rosterSnapshot.some((m) => m.userId === user.id)) ||
-    regB?.captainUserId === user.id ||
-    (match.teamBId ? db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id) : false);
+  const { isRosterA, isRosterB } = buildViewerContext(user, match);
 
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
@@ -566,19 +548,8 @@ router.post('/:id/request-admin', requireAuth, (req: AuthenticatedRequest, res: 
 
   db.data.adminTickets.push(ticket);
 
-  db.data.matchMessages.push({
-    id: uuidv4(),
-    matchId: match.id,
-    userId: user.id,
-    userName: user.displayName || user.username,
-    userRole: user.role,
-    type: 'ADMIN',
-    message: `ADMIN ASSISTANCE REQUESTED: "${category || 'Referee Assistance'}" — Ticket #${ticket.id.slice(0, 6)} generated.`,
-    createdAt: isoNow
-  });
-
   db.save();
-  broadcastEvent('ADMIN_TICKET_CREATED', { ticketId: ticket.id });
+  broadcastEvent('ADMIN_TICKET_CREATED', {});
 
   return res.json({
     success: true,
@@ -596,18 +567,16 @@ router.post('/:id/evidence', requireAuth, (req: AuthenticatedRequest, res: Respo
     return res.status(404).json({ error: 'Match not found.' });
   }
 
-  const { type, url, description, runNumber } = req.body;
-  if (!url || !url.trim()) {
-    return res.status(400).json({ error: 'Evidence URL or VOD link is required.' });
+  const { type, url, description, runNumber } = req.body ?? {};
+  if (typeof url !== 'string' || !url.trim() || url.length > 2048) {
+    return res.status(400).json({ error: 'Enter an evidence URL of up to 2,048 characters.' });
   }
-
-  // Validate URL scheme and length
   const trimmedUrl = url.trim();
-  if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
-    return res.status(400).json({ error: 'Evidence URL must use http:// or https:// protocol.' });
+  if (!isEvidenceUrl(trimmedUrl)) {
+    return res.status(400).json({ error: 'Evidence URL must use http:// or https:// without embedded credentials.' });
   }
-  if (trimmedUrl.length > 2048) {
-    return res.status(400).json({ error: 'Evidence URL must not exceed 2048 characters.' });
+  if (type !== undefined && typeof type !== 'string') {
+    return res.status(400).json({ error: 'Invalid evidence type.' });
   }
 
   // Validate type enum
@@ -628,27 +597,12 @@ router.post('/:id/evidence', requireAuth, (req: AuthenticatedRequest, res: Respo
   }
 
   // Validate description length
-  if (description && description.length > 500) {
+  if (description !== undefined && (typeof description !== 'string' || description.length > 500)) {
     return res.status(400).json({ error: 'Description must not exceed 500 characters.' });
   }
 
   // Participant authorization: User MUST be in Team A or Team B snapshotted roster or Admin
-  const regA = match.teamAId
-    ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamAId)
-    : null;
-  const regB = match.teamBId
-    ? db.data.tournamentRegistrations.find((r) => r.tournamentId === match.tournamentId && r.teamId === match.teamBId)
-    : null;
-
-  const isRosterA =
-    (regA?.rosterSnapshot && regA.rosterSnapshot.some((m) => m.userId === user.id)) ||
-    regA?.captainUserId === user.id ||
-    (match.teamAId ? db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id) : false);
-
-  const isRosterB =
-    (regB?.rosterSnapshot && regB.rosterSnapshot.some((m) => m.userId === user.id)) ||
-    regB?.captainUserId === user.id ||
-    (match.teamBId ? db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id) : false);
+  const { isRosterA, isRosterB } = buildViewerContext(user, match);
 
   const isAdmin = user.role === 'ADMIN' || user.role === 'SUPERADMIN';
 
@@ -676,19 +630,6 @@ router.post('/:id/evidence', requireAuth, (req: AuthenticatedRequest, res: Respo
   };
 
   db.data.matchEvidence.push(evidence);
-
-  db.data.matchMessages.push({
-    id: uuidv4(),
-    matchId: match.id,
-    userId: user.id,
-    userName: user.displayName || user.username,
-    userRole: user.role,
-    teamId,
-    teamName,
-    type: 'CHAT',
-    message: `EVIDENCE SUBMITTED (${evidence.type}): ${evidence.url}${evidence.description ? ` — "${evidence.description}"` : ''}`,
-    createdAt: isoNow
-  });
 
   db.save();
   broadcastEvent('MATCH_UPDATED', { matchId: match.id, tournamentId: match.tournamentId });

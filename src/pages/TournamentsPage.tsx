@@ -12,6 +12,7 @@ import {
   Clock
 } from 'lucide-react';
 import { Tournament } from '../types';
+import { useAuth } from '../context/AuthContext';
 
 interface TournamentsPageProps {
   tournaments: Tournament[];
@@ -19,6 +20,40 @@ interface TournamentsPageProps {
 }
 
 export const TournamentsPage: React.FC<TournamentsPageProps> = ({ tournaments, onSelectTournament }) => {
+  const { user, token } = useAuth();
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPERADMIN';
+
+  const createTournament = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    setCreating(true);
+    setCreateError('');
+    try {
+      const response = await fetch('/api/tournaments', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: values.get('title'), description: values.get('description'),
+          featuredObjectiveTitle: values.get('featuredObjectiveTitle'),
+          featuredObjectiveDescription: values.get('featuredObjectiveDescription'),
+          featuredObjectivePoints: Number(values.get('featuredObjectivePoints')),
+          maxTeams: Number(values.get('maxTeams')), prizePool: Number(values.get('prizePool')),
+          registrationCloseAt: new Date(String(values.get('registrationCloseAt'))).toISOString(),
+          tournamentStartAt: new Date(String(values.get('tournamentStartAt'))).toISOString()
+        })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not create the tournament.');
+      onSelectTournament(result.tournament.id);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : 'Could not create the tournament.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'LIVE' | 'REGISTRATION_OPEN' | 'COMPLETED'>('ALL');
 
@@ -77,6 +112,25 @@ export const TournamentsPage: React.FC<TournamentsPageProps> = ({ tournaments, o
         </div>
       </div>
 
+      {isAdmin && (
+        <details className="rounded-xl border border-slate-700 bg-[#121929] p-4">
+          <summary className="cursor-pointer font-semibold text-amber-300">Create free-entry tournament</summary>
+          <form onSubmit={createTournament} className="mt-4 grid gap-4 sm:grid-cols-2 [&_input]:mt-1 [&_input]:block [&_input]:w-full [&_input]:rounded [&_input]:bg-slate-800 [&_input]:p-2">
+            <label>Title<input name="title" required maxLength={100} /></label>
+            <label>Description<input name="description" maxLength={2000} /></label>
+            <label>Registration closes (local time)<input name="registrationCloseAt" type="datetime-local" required /></label>
+            <label>Tournament starts (local time)<input name="tournamentStartAt" type="datetime-local" required /></label>
+            <label>Maximum teams<input name="maxTeams" type="number" required min={2} max={64} defaultValue={8} /></label>
+            <label>Prize pool (USD)<input name="prizePool" type="number" required min={0} max={1000000} defaultValue={0} /></label>
+            <label>Featured objective<input name="featuredObjectiveTitle" required maxLength={100} /></label>
+            <label>Objective instructions<input name="featuredObjectiveDescription" maxLength={1000} /></label>
+            <label>Objective points<input name="featuredObjectivePoints" type="number" required min={0} max={100} defaultValue={5} /></label>
+            {createError && <p role="alert" className="sm:col-span-2 text-red-300">{createError}</p>}
+            <button type="submit" disabled={creating} className="sm:col-span-2 justify-self-start rounded bg-amber-400 px-4 py-2 font-semibold text-black disabled:opacity-50">{creating ? 'Creating…' : 'Open registration'}</button>
+          </form>
+        </details>
+      )}
+
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
         {/* Search */}
@@ -114,16 +168,24 @@ export const TournamentsPage: React.FC<TournamentsPageProps> = ({ tournaments, o
         {filteredTournaments.map((t) => (
           <div
             key={t.id}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onSelectTournament(t.id);
+              }
+            }}
             onClick={() => onSelectTournament(t.id)}
             className="rounded-2xl bg-[#0f1624] border border-[#1f2c46] hover:border-amber-500/60 transition-all duration-200 overflow-hidden cursor-pointer flex flex-col justify-between group shadow-xl hover:shadow-amber-500/10"
           >
             {/* Banner with Map Image */}
             <div className="relative h-40 overflow-hidden">
-              <img
+              {t.bannerUrl && <img
                 src={t.bannerUrl}
                 alt={t.name}
                 className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-              />
+              />}
               <div className="absolute inset-0 bg-gradient-to-t from-[#0f1624] via-[#0f1624]/40 to-transparent"></div>
               <div className="absolute top-3 right-3">{getStatusBadge(t.status)}</div>
               <div className="absolute bottom-3 left-4 flex items-center gap-1.5 text-xs text-amber-300 font-mono">

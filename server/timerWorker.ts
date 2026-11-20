@@ -3,7 +3,11 @@ import { db } from './db';
 import { advanceMatchWinner, calculateTournamentCurrentRound } from './bracket';
 import { determineMatchWinner, calculateRunScore } from './scoring';
 
-export type EventBroadcaster = (eventType: string, data: any) => void;
+type EventMetadata = { matchId?: string; tournamentId?: string };
+type PublicEvent = 'MATCH_UPDATED' | 'TOURNAMENT_UPDATED' | 'REGISTRY_UPDATED' | 'BRACKET_GENERATED'
+  | 'MESSAGE_POSTED' | 'ADMIN_TICKET_CREATED' | 'ADMIN_TICKET_UPDATED' | 'DISPUTE_RESOLVED';
+
+export type EventBroadcaster = (eventType: PublicEvent, data: EventMetadata) => void;
 
 let broadcaster: EventBroadcaster = () => {};
 
@@ -11,8 +15,8 @@ export function setEventBroadcaster(fn: EventBroadcaster) {
   broadcaster = fn;
 }
 
-export function broadcastEvent(eventType: string, data: any) {
-  broadcaster(eventType, data);
+export function broadcastEvent(eventType: PublicEvent, { matchId, tournamentId }: EventMetadata) {
+  broadcaster(eventType, { matchId, tournamentId });
 }
 
 /**
@@ -64,7 +68,7 @@ export function processTimerWorkerTick() {
           timestamp: nowIso
         });
 
-        broadcastEvent('TOURNAMENT_UPDATED', { tournamentId: tourn.id, status: tourn.status });
+        broadcastEvent('TOURNAMENT_UPDATED', { tournamentId: tourn.id });
       }
     }
   }
@@ -544,7 +548,7 @@ export function processTimerWorkerTick() {
 
           if (winnerResult.isTied) {
             match.matchStatus = 'ADMIN_REVIEW';
-            match.adminNotes = 'Tie detected across all tiebreakers. Admin tiebreaker run required.';
+            match.adminNotes = 'Tie detected across all tiebreakers. Referee ruling required.';
             match.updatedAt = nowIso;
             hasChanges = true;
 
@@ -555,7 +559,7 @@ export function processTimerWorkerTick() {
               requestingUserId: 'SYSTEM',
               requestingUserName: 'SYSTEM',
               category: 'DEAD HEAT TIE',
-              description: `Match between ${match.teamAName} and ${match.teamBName} resulted in identical scores and tiebreaker metrics. Authorize tiebreaker run.`,
+              description: `Match between ${match.teamAName} and ${match.teamBName} resulted in identical scores and tiebreaker metrics. A referee must issue a ruling.`,
               status: 'OPEN',
               createdAt: nowIso,
               updatedAt: nowIso
@@ -568,7 +572,7 @@ export function processTimerWorkerTick() {
               userName: 'SYSTEM',
               userRole: 'SYSTEM',
               type: 'SYSTEM',
-              message: 'SYSTEM — Complete tie detected. Administrator summoned to authorize Tiebreaker Run.',
+              message: 'SYSTEM — Complete tie detected. A referee must review the result.',
               createdAt: nowIso
             });
           } else {

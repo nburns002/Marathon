@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -25,6 +26,7 @@ import { generateSingleEliminationBracket } from './bracket';
 import { calculateRunScore } from './scoring';
 
 export interface DatabaseSchema {
+  demo?: true;
   users: UserRecord[];
   teams: Team[];
   teamMembers: TeamMember[];
@@ -43,26 +45,55 @@ export interface DatabaseSchema {
   notifications: Notification[];
 }
 
-const DB_FILE = path.join(process.cwd(), 'marathon_db.json');
+const DB_FILE = process.env.MARATHON_JSON_PATH || path.join(process.cwd(), 'marathon_db.json');
 
 class DatabaseStore {
   public data: DatabaseSchema;
-  private saveTimeout: NodeJS.Timeout | null = null;
+  private readonly sqlite?: DatabaseSync;
+  private lastCommitted?: string;
 
   constructor() {
+    if (process.env.MARATHON_SQLITE_PATH) {
+      this.sqlite = new DatabaseSync(process.env.MARATHON_SQLITE_PATH);
+      this.sqlite.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        CREATE TABLE IF NOT EXISTS tournament_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          snapshot TEXT NOT NULL CHECK (json_valid(snapshot))
+        ) STRICT;
+      `);
+    }
     this.data = this.loadOrSeed();
+    this.lastCommitted = JSON.stringify(this.data);
+  }
+
+  private readSnapshot(serialized: string): DatabaseSchema {
+    const snapshot = JSON.parse(serialized);
+    const collections = ['users', 'teams', 'teamMembers', 'teamInvitations', 'tournaments',
+      'tournamentRegistrations', 'matches', 'brackets', 'runSubmissions', 'matchMessages',
+      'matchEvidence', 'matchDisputes', 'adminTickets', 'adminActions', 'auditLogs', 'notifications'];
+    if (!snapshot || collections.some((key) => !Array.isArray(snapshot[key]))) {
+      throw new Error('Invalid Marathon database snapshot.');
+    }
+    if (process.env.DEMO_MODE !== 'true' && (snapshot.demo === true ||
+        snapshot.users.some((user: UserRecord) => user.id === 'usr-admin-1' && user.email === 'director@marathontournaments.gg'))) {
+      throw new Error('Demo database cannot be used outside demo mode. Choose a separate database for production.');
+    }
+    return snapshot;
   }
 
   private loadOrSeed(): DatabaseSchema {
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        console.log('[DB] Loaded existing database from disk.');
-        return parsed;
-      } catch (err) {
-        console.error('[DB] Failed to parse database file, reseeding...', err);
+    if (this.sqlite) {
+      const row = this.sqlite.prepare('SELECT snapshot FROM tournament_state WHERE id = 1').get();
+      if (row) return this.readSnapshot(String(row.snapshot));
+      if (process.env.MARATHON_IMPORT_LEGACY_JSON === 'true') {
+        const snapshot = this.readSnapshot(fs.readFileSync(DB_FILE, 'utf-8'));
+        this.saveImmediate(snapshot);
+        return snapshot;
       }
+    } else if (fs.existsSync(DB_FILE)) {
+      return this.readSnapshot(fs.readFileSync(DB_FILE, 'utf-8'));
     }
 
     // In non-demo environments, initialize clean empty database (never seed demo accounts)
@@ -73,6 +104,7 @@ class DatabaseStore {
     }
 
     const seeded = this.createSeedData();
+    seeded.demo = true;
     this.saveImmediate(seeded);
     return seeded;
   }
@@ -99,40 +131,56 @@ class DatabaseStore {
     };
 
     // Secure production administrator bootstrap mechanism
-    if (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD) {
+    const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim();
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+    if (email !== undefined || password !== undefined) {
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+          !password || password.length < 16 || Buffer.byteLength(password) > 72 ||
+          new Set(password).size < 8) {
+        throw new Error('Provide a valid bootstrap email and a strong password of at least 16 characters and at most 72 bytes.');
+      }
       const nowIso = new Date().toISOString();
       const adminUser: UserRecord = {
         id: `usr-admin-${uuidv4().slice(0, 8)}`,
-        email: process.env.BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase(),
-        passwordHash: bcrypt.hashSync(process.env.BOOTSTRAP_ADMIN_PASSWORD, 10),
+        email: email.toLowerCase(),
+        passwordHash: bcrypt.hashSync(password, 12),
         username: process.env.BOOTSTRAP_ADMIN_USERNAME || 'Admin',
         displayName: process.env.BOOTSTRAP_ADMIN_NAME || 'Platform Administrator',
         bungieId: process.env.BOOTSTRAP_ADMIN_BUNGIE || 'Admin#0001',
-        avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=Admin`,
+        avatarUrl: '',
         role: 'SUPERADMIN',
         accountStatus: 'ACTIVE',
         createdAt: nowIso,
         updatedAt: nowIso
       };
       schema.users.push(adminUser);
-      console.log(`[DB] Bootstrapped production administrator: ${adminUser.email}`);
+      console.log('[DB] Bootstrapped production administrator.');
     }
 
     return schema;
   }
 
   public save(): void {
-    if (this.saveTimeout) clearTimeout(this.saveTimeout);
-    this.saveTimeout = setTimeout(() => {
-      this.saveImmediate(this.data);
-    }, 200);
+    this.saveImmediate();
   }
 
   public saveImmediate(dataToSave: DatabaseSchema = this.data): void {
     try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('[DB] Error writing DB file:', err);
+      const snapshot = JSON.stringify(dataToSave);
+      if (this.sqlite) {
+        this.sqlite.prepare(`
+          INSERT INTO tournament_state (id, snapshot) VALUES (1, ?)
+          ON CONFLICT (id) DO UPDATE SET snapshot = excluded.snapshot
+        `).run(snapshot);
+      } else {
+        const stagingFile = `${DB_FILE}.${process.pid}.tmp`;
+        fs.writeFileSync(stagingFile, snapshot, { encoding: 'utf-8', mode: 0o600 });
+        fs.renameSync(stagingFile, DB_FILE);
+      }
+      this.lastCommitted = snapshot;
+    } catch (error) {
+      if (this.lastCommitted) this.data = JSON.parse(this.lastCommitted);
+      throw error;
     }
   }
 

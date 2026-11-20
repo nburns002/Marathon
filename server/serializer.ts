@@ -35,7 +35,7 @@ export function buildViewerContext(user?: User | null, match?: Match | null): Vi
     if (regA) {
       isRosterA = regA.rosterSnapshot.some((m) => m.userId === user.id) || regA.captainUserId === user.id;
     } else {
-      isRosterA = db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id);
+      isRosterA = db.data.teamMembers.some((m) => m.teamId === match.teamAId && m.userId === user.id && m.membershipStatus === 'ACTIVE');
     }
   }
 
@@ -46,7 +46,7 @@ export function buildViewerContext(user?: User | null, match?: Match | null): Vi
     if (regB) {
       isRosterB = regB.rosterSnapshot.some((m) => m.userId === user.id) || regB.captainUserId === user.id;
     } else {
-      isRosterB = db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id);
+      isRosterB = db.data.teamMembers.some((m) => m.teamId === match.teamBId && m.userId === user.id && m.membershipStatus === 'ACTIVE');
     }
   }
 
@@ -132,6 +132,17 @@ export function serializeMessagesForViewer(
   }
 
   return messages.map((msg) => {
+    // Historical evidence messages copied the private URL and description into chat.
+    if (msg.message.startsWith('EVIDENCE SUBMITTED (') &&
+        !((viewerContext.isRosterA && msg.teamId === match.teamAId) ||
+          (viewerContext.isRosterB && msg.teamId === match.teamBId))) {
+      return { ...msg, message: 'Evidence submitted. Details are available after Run 1 reveal.' };
+    }
+
+    if (msg.message.startsWith('ADMIN SCORE CORRECTION:') && msg.message.includes(' Run 1 ')) {
+      return { ...msg, message: 'A referee corrected a Run 1 score. Details are available after reveal.' };
+    }
+
     // Check if this message pertains to Run 1 score submission
     const isRun1Submission =
       msg.type === 'SCORE_SUBMISSION' ||
@@ -181,12 +192,6 @@ export function serializeEvidenceForViewer(
   }
 
   return evidenceList.filter((ev) => {
-    // If evidence is explicitly for Run 1, enforce strict secrecy
-    const isRun1 = ev.runNumber === 1;
-    if (!isRun1) {
-      return true;
-    }
-
     // Team A roster may see Team A Run 1 evidence
     if (viewerContext.isRosterA && ev.teamId === match.teamAId) {
       return true;
