@@ -36,3 +36,15 @@ Login allows 30 requests per 15 minutes per client IP. Registration allows 10 pe
 Production serves the UI and API on the same origin. `ALLOWED_ORIGINS` can explicitly allow additional exact origins on the API, including scheme and port where applicable. Other browser origins receive 403. Development retains permissive CORS for local tooling. JSON and form bodies are capped at 32 KiB.
 
 Production Helmet policy allows same-origin scripts, styles, and API/SSE connections, with inline styles for React layout and HTTPS external images. Frames are denied, MIME sniffing is disabled, and referrers are suppressed. Enable HSTS with `ENABLE_HSTS=true` only for HTTPS-only deployments. Vite development runs without production CSP. Evidence links can use HTTP or HTTPS. Uploaded image references use HTTPS. The server stores URLs without fetching them.
+
+### Render Web Service
+
+Use Node.js 24, one instance, and a persistent disk mounted at `/var/data`. Use
+`bun install --frozen-lockfile && npm run build` to build and `npm start` to
+start. Set the health check path to `/api/health`.
+
+Set `NODE_ENV=production`, `MARATHON_SQLITE_PATH=/var/data/marathon.sqlite`,
+`ENABLE_HSTS=false`, and a secure `JWT_SECRET` in Render. Render supplies
+`PORT` and `RENDER=true`. The app listens on `0.0.0.0` and trusts one proxy
+hop on Render. Other deployments use `TRUSTED_PROXY_IPS` when configured and
+default to port 3000 when `PORT` is unset.
